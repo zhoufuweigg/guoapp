@@ -59,9 +59,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - edition: hongguojian
+          - slug: hongguojian
+            label: 红果鉴（仅红果）
             arguments: ''
-          - edition: zhenguojian
+          - slug: zhenguojian
+            label: 真果鉴（--all-sources 全部站源）
             arguments: '--all-sources'
     steps:
       - uses: actions/checkout@v4
@@ -102,7 +104,8 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      - run: python scripts/build_android.py ${{ matrix.arguments }}
+      - name: 构建 ${{ matrix.label }}
+        run: python scripts/build_android.py ${{ matrix.arguments }}
       - name: 校验 APK 签名证书
         if: steps.signing.outputs.release == 'true'
         shell: bash
@@ -129,30 +132,124 @@ jobs:
               exit 1
             fi
           done
+      - name: 校验 Android 构建产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
+          if [ ! -f dist/android/SHA256SUMS.txt ]; then
+            echo "::error::dist/android 缺少 SHA256SUMS.txt，打包步骤未正常完成。"
+            exit 1
+          fi
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            artifact="dist/android/${{ matrix.slug }}-${version}-${abi}.apk"
+            if [ ! -f "$artifact" ]; then
+              echo "::error::缺少 ${{ matrix.slug }} 的 $abi 安装包：$artifact"
+              exit 1
+            fi
+          done
+          {
+            echo "### Android · ${{ matrix.label }}"
+            echo ""
+            echo "- 版本：$version"
+            echo ""
+            echo '```'
+            cat dist/android/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove signing files
         if: always()
         run: python scripts/configure_signing.py --clean
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.edition }}-android
+          name: ${{ matrix.slug }}-android
           path: dist/android/*
           if-no-files-found: error
           retention-days: 14
+
   windows:
-    if: false
     needs: checks
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - edition: hongguojian
+          - slug: hongguojian
+            label: 红果鉴（仅红果）
             arguments: ''
-          - edition: zhenguojian
+          - slug: zhenguojian
+            label: 真果鉴（--all-sources 全部站源）
             arguments: '--all-sources'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+      - name: 安装 MinGW-w64
+        shell: pwsh
+        run: |
+          choco install mingw --no-progress -y
+          $paths = @()
+          foreach ($root in 'C:\ProgramData\mingw64', 'C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64') {
+            $bin = Join-Path $root 'bin'
+            if (Test-Path $bin) { $paths += $bin }
+          }
+          $paths += 'C:\ProgramData\chocolatey\bin'
+          $paths = $paths | Select-Object -Unique
+          $paths | ForEach-Object { $_ | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+          $env:PATH = ($paths -join ';') + ';' + $env:PATH
+          $gcc = Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue
+          if (-not $gcc) { $gcc = Get-Command gcc -ErrorAction SilentlyContinue }
+          if (-not $gcc) { throw 'MinGW-w64 安装失败：PATH 中找不到 gcc，无法编译 Go cgo 核心。' }
+          & $gcc.Source --version | Select-Object -First 1
+      - name: 构建 ${{ matrix.label }}
+        run: python scripts/build_windows.py ${{ matrix.arguments }}
+      - name: 校验 Windows 构建产物
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $line = Get-Content pubspec.yaml | Where-Object { $_ -match '^version:\s*\S+' } | Select-Object -First 1
+          if (-not $line) { throw 'pubspec.yaml 缺少合法版本号。' }
+          $version = ($line -replace '^version:\s*', '').Trim()
+          $zip = "dist/windows/${{ matrix.slug }}-$version-windows-x64.zip"
+          if (-not (Test-Path $zip)) { throw "缺少 ${{ matrix.slug }} 的 Windows 安装包：$zip" }
+          if (-not (Test-Path 'dist/windows/SHA256SUMS.txt')) { throw 'dist/windows 缺少 SHA256SUMS.txt，打包步骤未正常完成。' }
+          Get-ChildItem dist/windows | Format-Table Name, Length
+          Get-Content dist/windows/SHA256SUMS.txt
+          @(
+            "### Windows · ${{ matrix.label }}"
+            ""
+            "- 版本：$version"
+            "- 安装包：$((Get-Item $zip).Length) 字节"
+            ""
+            '```'
+            (Get-Content dist/windows/SHA256SUMS.txt) -join "`n"
+            '```'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+      # 运行器没有音频和图形设备，播放器自检结果仅供参考，不阻塞出包。
+      - name: Windows 包播放自检
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install ffmpeg --no-progress -y
+          python scripts/smoke_windows.py ${{ matrix.arguments }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.slug }}-windows
+          path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 14
 
   ios:
     if: false
@@ -171,8 +268,8 @@ jobs:
       - uses: actions/checkout@v4
 
   release:
-    needs: [android]
-    if: always() && needs.android.result == 'success'
+    needs: [android, windows]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.android.result == 'success' && needs.windows.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
