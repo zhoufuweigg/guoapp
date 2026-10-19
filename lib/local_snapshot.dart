@@ -30,6 +30,7 @@ class LocalSnapshot {
     'activeProfile',
     'displayMode',
     'themeMode',
+    'themeAppearance',
     'autoExport',
     'exportPosters',
     'sourceGateEnabled',

@@ -16,7 +16,8 @@
         android:icon="@drawable/app_icon"
         android:banner="${appBanner}"
         android:usesCleartextTraffic="true"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

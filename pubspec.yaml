@@ -4,14 +4,13 @@ publish_to: none
 version: 0.2.64+71
 
 environment:
-  sdk: '>=3.12.0 <4.0.0'
+  sdk: '>=3.13.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  video_player: ^2.9.2
   ffi: ^2.2.0
   media_kit: 1.2.6
   media_kit_video: 2.0.1
@@ -19,6 +18,7 @@ dependencies:
   path: ^1.9.1
   path_provider: ^2.1.5
   shared_preferences: ^2.5.5
+  flutter_miuix: ^1.3.0
   flutter_foreground_task: 11.0.3
   ffmpeg_kit_flutter_new_min_gpl: 2.6.2
   file_picker: 13.1.0

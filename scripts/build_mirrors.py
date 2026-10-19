@@ -31,10 +31,18 @@ def mirrored_pub_lockfile(root, environment):
         lockfile.write_bytes(rewritten)
         yield
     finally:
-        if lockfile.read_bytes() != rewritten:
+        current = lockfile.read_bytes()
+        # pub get 会按 PUB_HOSTED_URL 改写宿主地址，这类差异不算锁文件变化；
+        # 只有依赖版本/校验和真的变了才视为构建期间被篡改。
+        if _normalize_pub_host(current) != _normalize_pub_host(rewritten):
             raise RuntimeError('构建期间锁文件发生变化，未覆盖；原文件保存在 ' + str(backup))
         lockfile.write_bytes(original)
         backup.unlink()
+
+
+def _normalize_pub_host(content):
+    return re.sub(rb'https://pub\.(?:dev|dartlang\.org)|https://pub\.flutter-io\.cn',
+                  b'https://pub.host', content)
 
 
 @contextmanager

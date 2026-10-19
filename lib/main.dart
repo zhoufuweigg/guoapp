@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -19,6 +20,7 @@ import 'media_library.dart';
 import 'package_smoke.dart';
 import 'lan_controller.dart';
 import 'player_screen.dart';
+import 'theme_appearance.dart';
 import 'video_enhancement_assets.dart';
 import 'diary_service.dart';
 
@@ -128,8 +130,8 @@ class _AppBootstrapState extends State<AppBootstrap>
             kind: device.television
                 ? 'tv'
                 : Platform.isWindows
-                ? 'computer'
-                : 'phone',
+                    ? 'computer'
+                    : 'phone',
           );
           LanController.current = link;
           link.openPlayback = (request) async {
@@ -181,14 +183,14 @@ class _AppBootstrapState extends State<AppBootstrap>
 
   @override
   Widget build(BuildContext context) => DuanjuApp(
-    repository: repository,
-    store: store,
-    bootstrapError: error?.toString(),
-    onRetry: _initialize,
-    television: device.television,
-    version: device.version,
-    navigatorKey: navigator,
-  );
+        repository: repository,
+        store: store,
+        bootstrapError: error?.toString(),
+        onRetry: _initialize,
+        television: device.television,
+        version: device.version,
+        navigatorKey: navigator,
+      );
 }
 
 class DuanjuApp extends StatelessWidget {
@@ -212,95 +214,140 @@ class DuanjuApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: Listenable.merge([store]),
-    builder: (_, _) => _application(),
-  );
+        animation: Listenable.merge([store]),
+        builder: (_, _) => _application(),
+      );
 
-  Widget _application() => MaterialApp(
-    navigatorKey: navigatorKey,
-    title: appName,
-    debugShowCheckedModeBanner: false,
-    locale: const Locale('zh', 'CN'),
-    supportedLocales: const [Locale('zh', 'CN')],
-    localizationsDelegates: GlobalMaterialLocalizations.delegates,
-    theme: AppTheme.light,
-    darkTheme: AppTheme.dark,
-    themeMode: AppTheme.mode(store?.themeMode ?? 'system'),
-    builder: (context, child) {
-      final mode = store?.displayMode ?? 'auto';
-      final tv = mode == 'television' || mode == 'auto' && television;
-      final theme = Theme.of(context);
-      return AnnotatedRegion<SystemUiOverlayStyle>(
-        value: AppTheme.systemBars(theme.brightness),
-        child: ColoredBox(
-          color: theme.scaffoldBackgroundColor,
-          child: AppOrientationScope(
-            television: tv,
-            child: AppLayout(
-              television: tv,
-              version: version,
-              child: Theme(
-                data: tv ? televisionTheme(theme) : theme,
-                child: Shortcuts(
-                  shortcuts: const {
-                    SingleActivator(
-                      LogicalKeyboardKey.select,
-                      includeRepeats: false,
-                    ): ActivateIntent(),
-                    SingleActivator(
-                      LogicalKeyboardKey.gameButtonA,
-                      includeRepeats: false,
-                    ): ActivateIntent(),
-                    SingleActivator(LogicalKeyboardKey.goBack): DismissIntent(),
-                  },
-                  child: FocusTraversalGroup(child: child!),
-                ),
-              ),
-            ),
-          ),
+  ThemeAppearance get _appearance =>
+      store?.themeAppearance ?? const ThemeAppearance();
+
+  /// 根据外观设置生成页面转场：预测性返回优先，其次横移返回，默认缩放转场。
+  ThemeData _themed(ThemeData base, ThemeAppearance appearance) =>
+      base.copyWith(
+        pageTransitionsTheme: PageTransitionsTheme(
+          builders: {
+            TargetPlatform.android: appearance.predictiveBack
+                ? const PredictiveBackPageTransitionsBuilder()
+                : appearance.swipeBack
+                    ? const CupertinoPageTransitionsBuilder()
+                    : const ZoomPageTransitionsBuilder(),
+            TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
+            TargetPlatform.macOS: const CupertinoPageTransitionsBuilder(),
+            TargetPlatform.windows: const ZoomPageTransitionsBuilder(),
+            TargetPlatform.linux: const ZoomPageTransitionsBuilder(),
+            TargetPlatform.fuchsia: const ZoomPageTransitionsBuilder(),
+          },
         ),
       );
-    },
-    home: store != null
-        ? store!.locked
-              ? ProfilesScreen(store: store!, locked: true)
-              : HomeScreen(
-                  key: ValueKey(
-                    'profile-${store!.profile.id}-${store!.profileEpoch}',
+
+  /// 全局界面缩放：按逻辑尺寸反向缩放内容，保证布局与点击区域同步缩放。
+  Widget _scaled(Widget child, double scale, BuildContext context) {
+    if ((scale - 1).abs() < 0.001) return child;
+    final media = MediaQuery.of(context);
+    final size = media.size;
+    return MediaQuery(
+      data: media.copyWith(
+        size: size / scale,
+        devicePixelRatio: media.devicePixelRatio * scale,
+      ),
+      child: FittedBox(
+        fit: BoxFit.contain,
+        child: SizedBox(
+          width: size.width / scale,
+          height: size.height / scale,
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _application() => MaterialApp(
+        navigatorKey: navigatorKey,
+        title: appName,
+        debugShowCheckedModeBanner: false,
+        locale: const Locale('zh', 'CN'),
+        supportedLocales: const [Locale('zh', 'CN')],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
+        theme: _themed(AppTheme.light, _appearance),
+        darkTheme: _themed(AppTheme.dark, _appearance),
+        themeMode: AppTheme.mode(store?.themeMode ?? 'system'),
+        builder: (context, child) {
+          final mode = store?.displayMode ?? 'auto';
+          final tv = mode == 'television' || mode == 'auto' && television;
+          final theme = Theme.of(context);
+          final content = AnnotatedRegion<SystemUiOverlayStyle>(
+            value: AppTheme.systemBars(theme.brightness),
+            child: ColoredBox(
+              color: theme.scaffoldBackgroundColor,
+              child: AppOrientationScope(
+                television: tv,
+                child: AppLayout(
+                  television: tv,
+                  version: version,
+                  child: Theme(
+                    data: tv ? televisionTheme(theme) : theme,
+                    child: Shortcuts(
+                      shortcuts: const {
+                        SingleActivator(
+                          LogicalKeyboardKey.select,
+                          includeRepeats: false,
+                        ): ActivateIntent(),
+                        SingleActivator(
+                          LogicalKeyboardKey.gameButtonA,
+                          includeRepeats: false,
+                        ): ActivateIntent(),
+                        SingleActivator(LogicalKeyboardKey.goBack):
+                            DismissIntent(),
+                      },
+                      child: FocusTraversalGroup(child: child!),
+                    ),
                   ),
-                  repository: repository,
-                  store: store!,
-                )
-        : Scaffold(
-            body: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.play_circle_fill_rounded,
-                      color: Color(0xFFFF765F),
-                      size: 72,
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      bootstrapError ?? '正在打开$appName',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 18),
-                    ),
-                    const SizedBox(height: 24),
-                    if (bootstrapError == null)
-                      const CircularProgressIndicator()
-                    else
-                      FilledButton(
-                        onPressed: onRetry,
-                        child: const Text('重新打开'),
-                      ),
-                  ],
                 ),
               ),
             ),
-          ),
-  );
+          );
+          return _scaled(content, _appearance.scale, context);
+        },
+        home: store != null
+            ? store!.locked
+                ? ProfilesScreen(store: store!, locked: true)
+                : HomeScreen(
+                    key: ValueKey(
+                      'profile-${store!.profile.id}-${store!.profileEpoch}',
+                    ),
+                    repository: repository,
+                    store: store!,
+                  )
+            : Scaffold(
+                body: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.play_circle_fill_rounded,
+                          color: Color(0xFFFF765F),
+                          size: 72,
+                        ),
+                        const SizedBox(height: 24),
+                        Text(
+                          bootstrapError ?? '正在打开$appName',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 18),
+                        ),
+                        const SizedBox(height: 24),
+                        if (bootstrapError == null)
+                          const CircularProgressIndicator()
+                        else
+                          FilledButton(
+                            onPressed: onRetry,
+                            child: const Text('重新打开'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+      );
 }

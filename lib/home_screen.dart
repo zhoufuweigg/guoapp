@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +45,9 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   static const _recommendationCategory = 'app:recommendations';
+  /// 页面被其他路由覆盖（如播放页压栈）时缓存的子树：
+  /// 后台期间 store 的通知直接复用它，跳过整页网格重建。
+  Widget? _backgroundCache;
   final _search = TextEditingController();
   final _scroll = ScrollController();
   Timer? _debounce;
@@ -813,12 +817,37 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.store,
-    builder: (context, _) => LayoutBuilder(
+    builder: (context, _) {
+      final route = ModalRoute.of(context);
+      if (route != null && !route.isCurrent && _backgroundCache != null) {
+        return _backgroundCache!;
+      }
+      final child = LayoutBuilder(
       builder: (context, constraints) {
         final television = AppLayout.isTelevision(context);
         final desktop = constraints.maxWidth >= 840;
+        final appearance = widget.store.themeAppearance;
+        final blurredBars = appearance.blurBars && !desktop && !television;
+        final floatingBar = appearance.floatingBar && !desktop && !television;
         final scaffold = Scaffold(
+          extendBodyBehindAppBar: blurredBars,
+          extendBody: floatingBar || blurredBars,
           appBar: AppBar(
+            backgroundColor: blurredBars ? Colors.transparent : null,
+            elevation: blurredBars ? 0 : null,
+            scrolledUnderElevation: blurredBars ? 0 : null,
+            flexibleSpace: blurredBars
+                ? ClipRect(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                      child: ColoredBox(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surface.withValues(alpha: 0.72),
+                      ),
+                    ),
+                  )
+                : null,
             toolbarHeight: television ? 64 : null,
             titleSpacing: 12,
             title: _selectionMode
@@ -1022,9 +1051,19 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 8),
             ],
           ),
-          body: SafeArea(
-            top: false,
-            child: Row(
+          body: Padding(
+            padding: EdgeInsets.only(
+              top: blurredBars
+                  ? MediaQuery.paddingOf(context).top +
+                        (television ? 64 : kToolbarHeight)
+                  : 0,
+            ),
+            // 底部不裁切：让列表内容从悬浮底栏下方穿过，模糊/液态玻璃才有内容可糊；
+            // 列表尾部通过 MediaQuery.padding.bottom（extendBody 时 = 底栏高度）补偿。
+            child: SafeArea(
+              top: !blurredBars,
+              bottom: false,
+              child: Row(
               children: [
                 if (television) ...[
                   SizedBox(
@@ -1120,6 +1159,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
+          ),
           bottomNavigationBar: desktop || television
               ? null
               : _selectionMode
@@ -1127,6 +1167,9 @@ class _HomeScreenState extends State<HomeScreen> {
               : AppBottomNavigation(
                   selectedIndex: _tab,
                   onDestinationSelected: _onNavSelected,
+                  floating: floatingBar,
+                  blurred: blurredBars,
+                  liquidGlass: floatingBar && appearance.liquidGlass,
                   destinations: [
                     NavigationDestination(
                       icon: Icon(Icons.explore_outlined),
@@ -1170,7 +1213,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         );
       },
-    ),
+      );
+      _backgroundCache = child;
+      return child;
+    },
   );
 
   Widget _catalog({required bool selectionInBody}) {
@@ -1354,7 +1400,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   padding,
                                   0,
                                   padding,
-                                  16,
+                                  16 + MediaQuery.paddingOf(context).bottom,
                                 ),
                                 sliver: SliverGrid(
                                   gridDelegate: dramaGridDelegate(
@@ -1369,7 +1415,11 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               SliverToBoxAdapter(
                                 child: Padding(
-                                  padding: const EdgeInsets.only(bottom: 24),
+                                  padding: EdgeInsets.only(
+                                    bottom:
+                                        24 +
+                                        MediaQuery.paddingOf(context).bottom,
+                                  ),
                                   child: Center(
                                     child: _loadingMore
                                         ? const CircularProgressIndicator()

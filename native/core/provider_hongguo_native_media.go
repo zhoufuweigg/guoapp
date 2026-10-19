@@ -25,15 +25,91 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		return providerMedia{}, err
 	}
 	data := nestedMap(result, "data")
+<<<<<<< HEAD
+	model, err := hongguoVideoModel(data)
+	if err != nil {
+		return providerMedia{}, err
+=======
 	model, _ := data["video_model"].(map[string]any)
-	if encoded, ok := data["video_model"].(string); ok {
+	if encoded, ok := data["video_model"].(string); ok && encoded != "" {
+		if decoded, err := decodeHongguoBase64(encoded); err == nil && len(decoded) > 0 {
+			encoded = string(decoded)
+		}
 		decoder := json.NewDecoder(strings.NewReader(encoded))
 		decoder.UseNumber()
 		if err := decoder.Decode(&model); err != nil {
 			return providerMedia{}, errors.New("红果 App 播放信息格式异常")
 		}
+>>>>>>> 5564a4219aedc2e33b25814eb5a5c0af1ebadb7a
+	}
+	if len(model) == 0 {
+		if rows := anyList(data["video_list"]); len(rows) > 0 {
+			model = map[string]any{
+				"video_list":     data["video_list"],
+				"video_duration": data["video_duration"],
+				"duration":       data["duration"],
+			}
+		}
+	}
+	if len(model) == 0 {
+		if rows := anyList(data["video_list"]); len(rows) > 0 {
+			model = map[string]any{
+				"video_list":     data["video_list"],
+				"video_duration": data["video_duration"],
+				"duration":       data["duration"],
+			}
+		}
 	}
 	return selectHongguoAppMedia(model)
+}
+
+// hongguoVideoModel 兼容三种下发结构：
+// 1) data.video_model 为对象；
+// 2) data.video_model 为 base64 字符串（解码后是 JSON）；
+// 3) video_list 直接平铺在 data 上（含 video_model 只带时长、无列表的情况）。
+func hongguoVideoModel(data map[string]any) (map[string]any, error) {
+	model, _ := data["video_model"].(map[string]any)
+	if encoded, ok := data["video_model"].(string); ok && encoded != "" {
+		// 服务端会以两种形式下发 video_model：base64 编码的 JSON，或明文 JSON 字符串
+		// （实测 {"status":10,"message":"success","video_list":[...]} 为正常下发）。
+		// 明文 JSON 以 { 或 [ 开头，直接解析；其余先尝试 base64 解码，两者都失败才报错。
+		text := encoded
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+			if decoded, err := decodeHongguoBase64(encoded); err == nil && len(decoded) > 0 {
+				text = string(decoded)
+			}
+		}
+		decoder := json.NewDecoder(strings.NewReader(text))
+		decoder.UseNumber()
+		if err := decoder.Decode(&model); err != nil {
+			return nil, fmt.Errorf("红果 App 播放信息格式异常（%s）: %w", hongguoClipText(text, 24), err)
+		}
+	}
+	if len(anyList(model["video_list"])) == 0 {
+		if rows := anyList(data["video_list"]); len(rows) > 0 {
+			merged := make(map[string]any, len(model)+3)
+			for key, value := range model {
+				merged[key] = value
+			}
+			merged["video_list"] = data["video_list"]
+			if _, ok := merged["video_duration"]; !ok {
+				merged["video_duration"] = data["video_duration"]
+			}
+			if _, ok := merged["duration"]; !ok {
+				merged["duration"] = data["duration"]
+			}
+			model = merged
+		}
+	}
+	return model, nil
+}
+
+func hongguoClipText(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
 
 func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
