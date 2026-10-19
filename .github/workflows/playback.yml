@@ -1,0 +1,42 @@
+name: Playback core regression
+
+on:
+  push:
+    branches: [main, master, 'fix/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playback-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOPROXY: https://proxy.golang.org,direct
+  GOSUMDB: sum.golang.org
+
+jobs:
+  playback-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        all-sources: ['false', 'true']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - name: 播放与下载核心回归
+        working-directory: native
+        env:
+          ALL_SOURCES: ${{ matrix.all-sources }}
+        run: >-
+          go test -count=1 -race -timeout=5m
+          -ldflags="-X duanjuapp/native/core.buildAllSources=$ALL_SOURCES"
+          ./core
+          -run 'TestNative(Playback|Download|Downloaded|HLS|Danmaku)|TestDownloadMigration|TestLegacyPlayback'
