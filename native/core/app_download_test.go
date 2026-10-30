@@ -21,7 +21,7 @@ import (
 
 func downloadTestManager(t *testing.T) *nativeDownloads {
 	t.Helper()
-	engine, err := newNativeEngine(t.TempDir())
+	engine, err := newNativeEngine(t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +80,21 @@ func TestNativeDownloadsOriginalBytesPersistenceAndLocalPriority(t *testing.T) {
 		t.Fatalf("duplicate enqueue: %d, %v", n, err)
 	}
 	jobs := waitDownloads(t, manager, func(jobs []nativeDownloadJob) bool {
-		return len(jobs) == 2 && jobs[0].State == "completed" && jobs[1].State == "completed"
+		return len(jobs) == 2 && jobs[0].State == "converting" && jobs[1].State == "converting"
 	})
+	for _, job := range jobs {
+		if job.Bytes != int64(len(data)) || job.Progress != 1 {
+			t.Fatalf("wrong downloaded progress: %+v", job)
+		}
+		work, err := manager.beginConversion(job.ID)
+		if err != nil || work.Key != hex.EncodeToString(key) {
+			t.Fatalf("conversion input lost key: %+v %v", work, err)
+		}
+		if got, err := os.ReadFile(work.Input); err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("source bytes changed: %v", err)
+		}
+		copyConversion(t, manager, work, job.ID)
+	}
 	manager.close()
 	reopened := newNativeDownloads(manager.engine)
 	t.Cleanup(reopened.close)
@@ -89,19 +102,23 @@ func TestNativeDownloadsOriginalBytesPersistenceAndLocalPriority(t *testing.T) {
 	upstream.Close()
 	for _, job := range jobs {
 		plan, err := manager.engine.nativeResolve(context.Background(), nativeInput{Drama: job.Drama, Index: job.Index})
-		if err != nil || !plan.Local || plan.Key != hex.EncodeToString(key) || plan.Quality != 1080 || plan.Session != "" {
+		if err != nil || !plan.Local || plan.Key != "" || plan.Quality != 1080 || plan.Session != "" {
 			t.Fatalf("download must play locally after restart: %+v, %v", plan, err)
+		}
+		want := filepath.Join(reopened.root, "合成下载测试", nativeDownloadEpisodeFile(job.Index))
+		if plan.URL != want {
+			t.Fatalf("converted file not named by drama: %s", plan.URL)
 		}
 		got, err := os.ReadFile(plan.URL)
 		if err != nil || !bytes.Equal(got, data) {
-			t.Fatalf("source bytes changed: %v", err)
+			t.Fatalf("converted bytes changed: %v", err)
 		}
-		if job.Bytes != int64(len(data)) || job.Progress != 1 {
-			t.Fatalf("wrong completed progress: %+v", job)
+		if _, err := os.Stat(filepath.Join(reopened.root, job.ID)); !os.IsNotExist(err) {
+			t.Fatal("download workspace kept after conversion")
 		}
 	}
 	id := nativeDownloadID(input.Drama.ID, 1)
-	if err := os.Remove(filepath.Join(reopened.root, id, "media.mp4")); err != nil {
+	if err := os.Remove(filepath.Join(reopened.root, "合成下载测试", nativeDownloadEpisodeFile(1))); err != nil {
 		t.Fatal(err)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -353,7 +370,7 @@ func TestNativeDownloadsBoundedQueueCancelAndPlaybackIsolation(t *testing.T) {
 	}
 	waitDownloads(t, manager, func(jobs []nativeDownloadJob) bool {
 		for _, job := range jobs {
-			if job.State != "completed" {
+			if job.State != "converting" {
 				return false
 			}
 		}
@@ -366,6 +383,40 @@ func TestNativeDownloadsBoundedQueueCancelAndPlaybackIsolation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.root, first)); !os.IsNotExist(err) {
 		t.Fatal("removed job recreated files")
 	}
+}
+
+func TestNativeDownloadsPauseSourceOnlyPausesThatSource(t *testing.T) {
+	manager := downloadTestManager(t)
+	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
+		<-ctx.Done()
+		return providerMedia{}, ctx.Err()
+	}
+	if _, err := manager.enqueue(downloadTestInput(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.control("huangdou", "pauseSource"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := manager.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.State == "paused" {
+			t.Fatalf("paused another source: %+v", job)
+		}
+	}
+	if err := manager.control("hongguo", "pauseSource"); err != nil {
+		t.Fatal(err)
+	}
+	waitDownloads(t, manager, func(jobs []nativeDownloadJob) bool {
+		for _, job := range jobs {
+			if job.State != "paused" {
+				return false
+			}
+		}
+		return len(jobs) == 3
+	})
 }
 
 func TestNativeDownloadsRestartPausesPendingJobs(t *testing.T) {

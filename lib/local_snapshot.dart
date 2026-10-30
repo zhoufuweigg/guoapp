@@ -21,9 +21,6 @@ class LocalSnapshot {
     'downloadPreferences',
     'catalogView',
     'recentSearches',
-    'lanRecords',
-    'lanSettings',
-    'lanReceipts',
   };
   static const globalKeys = {
     'profiles',
@@ -32,12 +29,18 @@ class LocalSnapshot {
     'themeMode',
     'autoExport',
     'exportPosters',
+    'sourceSwitches',
+    'forceLogin',
+  };
+  static const _retiredKeys = {
     'sourceGateEnabled',
     'sourceGateOff',
     'sourceGateSalt',
     'sourceGateHash',
-    'forceLogin',
   };
+  static final _retiredLibraryKey = RegExp(
+    r'^(profile\.[a-zA-Z0-9_-]{1,64}\.)?(lanRecords|lanSettings|lanReceipts)$',
+  );
   final SharedPreferences preferences;
   Map<String, Object> _values = {};
 
@@ -45,7 +48,7 @@ class LocalSnapshot {
       globalKeys.contains(key) ||
       libraryKeys.contains(key) ||
       RegExp(
-        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|seriesCandidates|mediaHistory|source|hideVip|playback|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts)$',
+        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|seriesCandidates|mediaHistory|source|hideVip|playback|downloadPreferences|catalogView|recentSearches)$',
       ).hasMatch(key);
 
   Map<String, Object> get values => Map.of(_values);
@@ -66,7 +69,11 @@ class LocalSnapshot {
     if (decoded['version'] != 1 || decoded['values'] is! Map) {
       throw const FormatException('本地配置快照无效');
     }
-    final values = Map<String, Object>.from(decoded['values'] as Map);
+    final values = Map<String, Object>.from(decoded['values'] as Map)
+      ..removeWhere(
+        (key, _) =>
+            _retiredKeys.contains(key) || _retiredLibraryKey.hasMatch(key),
+      );
     if (!values.containsKey('profiles')) {
       throw const FormatException('本地配置快照无效');
     }
@@ -80,8 +87,6 @@ class LocalSnapshot {
         'hideVip',
         'autoExport',
         'exportPosters',
-        'sourceGateEnabled',
-        'sourceGateOff',
         'forceLogin',
       }.contains(entry.key.split('.').last);
       if (!owns(entry.key) ||

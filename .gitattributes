@@ -4,6 +4,8 @@
 *.py text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+*.glsl text eol=lf
+*.hook text eol=lf
 *.ps1 text eol=crlf
 android/gradlew text eol=lf
 *.png binary

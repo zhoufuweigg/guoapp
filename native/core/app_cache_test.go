@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,7 +50,7 @@ func TestNativeCoverDecryptsAndPersistsAcrossRestart(t *testing.T) {
 	}))
 	defer upstream.Close()
 	directory := t.TempDir()
-	engine, err := newNativeEngine(directory)
+	engine, err := newNativeEngine(directory, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestNativeCoverDecryptsAndPersistsAcrossRestart(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatal("concurrent cover requests were not coalesced", calls.Load())
 	}
-	restarted, err := newNativeEngine(directory)
+	restarted, err := newNativeEngine(directory, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestNativeCoverFormatsFailuresAndOfflineFallback(t *testing.T) {
 	}))
 	defer upstream.Close()
 	directory := t.TempDir()
-	engine, err := newNativeEngine(directory)
+	engine, err := newNativeEngine(directory, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestNativeCoverFormatsFailuresAndOfflineFallback(t *testing.T) {
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := newNativeEngine(directory)
+	restarted, err := newNativeEngine(directory, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestNativeCoverRedirectAndBoundedDiskCache(t *testing.T) {
 		w.Write(plain)
 	}))
 	defer upstream.Close()
-	engine, err := newNativeEngine(t.TempDir())
+	engine, err := newNativeEngine(t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,12 +183,16 @@ func TestNativeCoverRedirectAndBoundedDiskCache(t *testing.T) {
 func TestNativeCatalogCacheFreshnessPagingAndRefresh(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		if r.URL.Path != "/api/videos/category/ai-duanju" {
+		if !strings.HasPrefix(r.URL.Path, "/api/videos/category/ai-") {
 			t.Error("test must only request synthetic catalog metadata", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		if r.URL.Path != "/api/videos/category/ai-duanju" {
+			json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+			return
+		}
+		calls.Add(1)
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		count := 24
 		if page > 1 {
@@ -202,7 +207,7 @@ func TestNativeCatalogCacheFreshnessPagingAndRefresh(t *testing.T) {
 	defer upstream.Close()
 	directory := t.TempDir()
 	open := func() *nativeEngine {
-		engine, err := newNativeEngine(directory)
+		engine, err := newNativeEngine(directory, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -250,7 +255,7 @@ func TestNativeCatalogCacheMigratesAndKeepsHongguoCursorItems(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "catalogs.json"), legacy, 0600); err != nil {
 		t.Fatal(err)
 	}
-	engine, err := newNativeEngine(directory)
+	engine, err := newNativeEngine(directory, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +268,7 @@ func TestNativeCatalogCacheMigratesAndKeepsHongguoCursorItems(t *testing.T) {
 	if result.Page != 4 || len(result.Items) != 2 || result.Items[0].ID != "hongguo:102" || result.Items[1].ID != old.ID {
 		t.Fatal("refresh lost catalog items preceding the saved feed cursor", result)
 	}
-	restarted, err := newNativeEngine(directory)
+	restarted, err := newNativeEngine(directory, "")
 	if err != nil || !restarted.nativeCached(sourceHongguo).Fresh {
 		t.Fatal("upgraded cache could not be reopened", err)
 	}

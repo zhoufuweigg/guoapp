@@ -167,7 +167,6 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 		if d.limiter != nil {
 			d.limiter.observe(request, response)
 		}
-		observeSourceResponse(request.Context(), response)
 		return response, nil
 	}
 	return nil, errors.New("播放凭证刷新失败")

@@ -21,6 +21,8 @@ class PlaybackPreloader extends ChangeNotifier {
   void _release(PlaybackPlan plan) =>
       unawaited(repository.release(plan.session).catchError((Object _) {}));
 
+  bool get ready => _ready != null && _now().isBefore(_expires);
+
   String get status {
     if (_ready != null && _now().isBefore(_expires)) {
       final bytes = _ready!.prefetchedBytes;

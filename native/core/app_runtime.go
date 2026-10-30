@@ -94,31 +94,31 @@ type nativeDrama struct {
 }
 
 type nativeInput struct {
-	LAN              json.RawMessage         `json:"lan"`
-	ExpectedVersions map[string]string       `json:"expectedVersions"`
-	SystemProxy      nativeSystemProxy       `json:"systemProxy"`
-	Settings         nativeResourceSettings  `json:"settings"`
-	JobIDs           []string                `json:"jobIds"`
-	PlaybackSession  string                  `json:"playbackSession"`
-	StartMS          int64                   `json:"startMs"`
-	DurationMS       int64                   `json:"durationMs"`
-	Board            string                  `json:"board"`
-	Entries          []nativeDownloadEpisode `json:"entries"`
-	JobID            string                  `json:"jobId"`
-	Command          string                  `json:"command"`
-	Action           string                  `json:"action"`
-	Directory        string                  `json:"directory"`
-	Source           string                  `json:"source"`
-	Page             int                     `json:"page"`
-	Query            string                  `json:"query"`
-	Category         string                  `json:"category"`
-	Drama            nativeDrama             `json:"drama"`
-	Chapter          Chapter                 `json:"chapter"`
-	Index            int                     `json:"index"`
-	Quality          int                     `json:"quality"`
-	Session          string                  `json:"session"`
-	Sequence         int64                   `json:"sequence"`
-	Force            bool                    `json:"force"`
+	SystemProxy     nativeSystemProxy       `json:"systemProxy"`
+	Settings        nativeResourceSettings  `json:"settings"`
+	JobIDs          []string                `json:"jobIds"`
+	PlaybackSession string                  `json:"playbackSession"`
+	StartMS         int64                   `json:"startMs"`
+	DurationMS      int64                   `json:"durationMs"`
+	Board           string                  `json:"board"`
+	Entries         []nativeDownloadEpisode `json:"entries"`
+	JobID           string                  `json:"jobId"`
+	Command         string                  `json:"command"`
+	Action          string                  `json:"action"`
+	Directory       string                  `json:"directory"`
+	Downloads       string                  `json:"downloads"`
+	Source          string                  `json:"source"`
+	Page            int                     `json:"page"`
+	Query           string                  `json:"query"`
+	Category        string                  `json:"category"`
+	Drama           nativeDrama             `json:"drama"`
+	Chapter         Chapter                 `json:"chapter"`
+	Index           int                     `json:"index"`
+	Quality         int                     `json:"quality"`
+	Session         string                  `json:"session"`
+	Sequence        int64                   `json:"sequence"`
+	Force           bool                    `json:"force"`
+	Version         string                  `json:"version"`
 }
 
 type nativeCatalogResult struct {
@@ -148,8 +148,6 @@ type nativePlan struct {
 }
 
 type nativeEngine struct {
-	lanMu            sync.Mutex
-	lan              *nativeLANServer
 	settingsMu       sync.Mutex
 	settings         nativeResourceSettings
 	readMu           sync.Mutex
@@ -159,6 +157,7 @@ type nativeEngine struct {
 	downloads        *nativeDownloads
 	downloader       *Downloader
 	directory        string
+	defaultDownloads string
 	mu               sync.Mutex
 	catalogs         map[string][]nativeDrama
 	catalogStates    map[string]nativeCatalogState
@@ -166,15 +165,12 @@ type nativeEngine struct {
 	hongguoCatalog   *hongguoCatalogState
 	recommendations  map[string]nativeRecommendationState
 	catalogSaveError error
-	sourceSaveError  error
 	covers           *nativeCoverCache
 	stream           *nativeStreamServer
 	playbacks        map[string]nativePlaybackChoice
 	playbackMu       sync.Mutex
 	playbackSequence int64
 	playbackCancel   context.CancelFunc
-	sourceTasks      map[string]*nativeSourceTask
-	sourceRecords    map[string]nativeSourceRecord
 	sourceCatalogMu  sync.Mutex
 	sourceCatalogs   map[string]chan struct{}
 }
@@ -248,7 +244,7 @@ func nativeDramaCategory(drama Drama) string {
 	return ""
 }
 
-func newNativeEngine(directory string) (*nativeEngine, error) {
+func newNativeEngine(directory, downloads string) (*nativeEngine, error) {
 	if !filepath.IsAbs(directory) {
 		return nil, errors.New("应用数据目录无效")
 	}
@@ -276,11 +272,13 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 			}
 			return nil
 		}}
-	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
+	engine := &nativeEngine{downloader: d, directory: directory, defaultDownloads: nativeDefaultDownloads(directory), catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
+	if filepath.IsAbs(downloads) {
+		engine.defaultDownloads = filepath.Clean(downloads)
+	}
 	engine.loadResourceSettings()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
-	engine.loadSourceRecords()
 	engine.covers = newNativeCoverCache(directory, d)
 	engine.downloads = newNativeDownloads(engine)
 	return engine, nil
@@ -308,26 +306,6 @@ func NativeRequest(raw string) (result string) {
 			envelope["code"] = "source_blocked"
 			envelope["retryAt"] = backoff.until
 		}
-		source := canonicalProviderSource(input.Source)
-		if source == "" {
-			source = sourceFromDramaID(input.Drama.ID)
-		}
-		if !errors.Is(err, context.Canceled) && (input.Action == "catalog" || input.Action == "detail" || input.Action == "resolve") {
-			nativeState.Lock()
-			engine := nativeState.engine
-			nativeState.Unlock()
-			if engine != nil && nativeSourceAvailable(source) {
-				engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
-					record.Error = publicError(err).Error()
-					if backoff != nil {
-						record.RetryAt = backoff.until
-					}
-					if !record.Running {
-						record.Stage, record.FinishedAt = "访问失败", time.Now()
-					}
-				})
-			}
-		}
 	} else {
 		envelope["data"] = data
 	}
@@ -345,7 +323,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	nativeState.Lock()
 	if input.Action == "initialize" {
 		if nativeState.engine == nil {
-			engine, err := newNativeEngine(input.Directory)
+			engine, err := newNativeEngine(input.Directory, input.Downloads)
 			if err != nil {
 				nativeState.Unlock()
 				return nil, err
@@ -370,7 +348,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
-	if input.Action == "danmaku" || input.Action == "preload" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
+	if input.Action == "danmaku" || input.Action == "preload" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
 		work, finish, err := engine.beginRead(ctx, input)
 		if err != nil {
 			return nil, err
@@ -379,8 +357,6 @@ func nativeDispatch(input nativeInput) (any, error) {
 		ctx = work
 	}
 	switch input.Action {
-	case "lan":
-		return engine.nativeLAN(ctx, input.Command, input.LAN)
 	case "updateSystemProxy":
 		return true, engine.updateSystemProxy(input.SystemProxy)
 	case "resourceSettings":
@@ -388,11 +364,9 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "saveResourceSettings":
 		return engine.saveResourceSettings(input.Settings)
 	case "controlDownloadBatch":
-		return engine.downloads.controlBatchExpected(ctx, input.JobIDs, input.Command, input.ExpectedVersions)
+		return engine.downloads.controlBatch(ctx, input.JobIDs, input.Command)
 	case "preload":
 		return engine.nativePreload(ctx, input)
-	case "prepareHandoff":
-		return engine.nativeResolve(ctx, input)
 	case "danmaku":
 		return engine.nativeDanmaku(ctx, input)
 	case "cancelRead":
@@ -435,6 +409,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]int{"added": added}, err
 	case "controlDownloads":
 		return true, engine.downloads.control(input.JobID, input.Command)
+	case "beginConversion":
+		return engine.downloads.beginConversion(input.JobID)
+	case "finishConversion":
+		return true, engine.downloads.finishConversion(input.JobID, input.Command)
 	case "localPlayback":
 		plan, _, err := engine.downloads.localPlan(input.Drama.ID, input.Index)
 		return plan, err
@@ -448,12 +426,6 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "categories":
 		items, err := engine.nativeCategories(ctx, input.Source, input.Force)
 		return map[string]any{"items": items}, err
-	case "sourceStatus":
-		return engine.sourceStatus(input.Source), nil
-	case "sourceJob":
-		return engine.startSourceTask(input.Source, input.Command, input.Drama)
-	case "cancelSourceJob":
-		return engine.cancelSourceTask(input.Source), nil
 	case "cover":
 		return engine.loadCover(ctx, input.Drama, input.Force)
 	case "prepareCover":
@@ -462,6 +434,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.nativeDetail(ctx, input.Drama)
 	case "metadata":
 		return engine.nativeMetadata(ctx, input.Drama)
+	case "followCheck":
+		return engine.nativeFollowCheck(ctx, input.Drama)
 	case "resolve", "fallback":
 		playback, finish, err := engine.nativeBeginPlayback(ctx, input.Sequence)
 		if err != nil {
@@ -478,6 +452,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "release":
 		engine.nativeReleasePlayback(input.Session)
 		return true, nil
+	case "checkUpdate":
+		return engine.checkUpdate(ctx, input.Version)
+	case "reportUsage":
+		return true, engine.reportUsage(ctx, input.Version)
 	default:
 		return nil, errors.New("不支持的应用操作")
 	}
@@ -514,17 +492,22 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	d := engine.downloader
 	result := nativeCatalogResult{Items: []nativeDrama{}, Page: page}
 	if query != "" && source == sourceHongguo {
-		entry, err := d.searchHongguoDramas(ctx, query)
+		var entry hongguoSearchEntry
+		var err error
+		if page == 1 {
+			entry, err = d.searchHongguoDramas(ctx, query)
+		} else if keyword, keywordErr := hongguoSearchKeyword(query); keywordErr != nil {
+			err = keywordErr
+		} else {
+			entry, err = d.fetchHongguoSearchPage(ctx, keyword, page)
+		}
 		if err != nil {
 			return result, err
 		}
 		for _, drama := range entry.Dramas {
 			result.Items = append(result.Items, nativeNormalize(drama))
 		}
-		result.Warning, result.Page = entry.Warning, 1
-		if entry.Limited && result.Warning == "" {
-			result.Warning = "已显示当前可获取的匹配结果，使用更完整的剧名可继续查找"
-		}
+		result.Warning, result.HasMore = entry.Warning, entry.HasMore
 		return result, nil
 	}
 	if query != "" && source == sourceHuangju {
@@ -618,6 +601,10 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	var err error
 	switch source {
 	case sourceHongguo:
+		if strings.HasPrefix(category, hongguoTagPrefix) {
+			items, result.HasMore, err = d.fetchHongguoTagPage(ctx, category, page)
+			break
+		}
 		engine.mu.Lock()
 		known := make(map[string]bool, len(engine.catalogs[cacheKey]))
 		for _, drama := range engine.catalogs[cacheKey] {
@@ -774,9 +761,7 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 	}
 	if !input.Force && engine.downloads != nil {
 		if plan, found, err := engine.downloads.localPlan(input.Drama.ID, input.Index); found || err != nil {
-			if input.Action != "prepareHandoff" || !errors.Is(err, errNativeLocalFile) {
-				return plan, err
-			}
+			return plan, err
 		}
 	}
 	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}

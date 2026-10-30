@@ -1,3 +1,5 @@
+import 'package:lpinyin/lpinyin.dart';
+
 import 'models.dart';
 
 enum CatalogSort {
@@ -61,6 +63,18 @@ String normalizedSearchText(String text) {
     RegExp(r'[\s\u3000，。！？、：；·「」『』（）【】《》“”‘’.,!?:;\-_/()\[\]{}]+'),
     '',
   );
+}
+
+bool matchesTitle(String title, String query) {
+  final term = normalizedSearchText(query);
+  if (term.isEmpty) return true;
+  final text = normalizedSearchText(title);
+  if (text.contains(term)) return true;
+  try {
+    return PinyinHelper.getShortPinyin(text).toLowerCase().contains(term);
+  } on PinyinException {
+    return false;
+  }
 }
 
 bool matchesDramaQuery(Drama drama, String query) {

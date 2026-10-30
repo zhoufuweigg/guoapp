@@ -1,0 +1,10 @@
+# Flutter-related
+**/Flutter/ephemeral/
+Flutter/GeneratedPluginRegistrant.swift
+**/Pods/
+
+# Xcode-related
+**/dgph
+**/xcuserdata/
+
+DuanjuCore/libDuanjuCore.a

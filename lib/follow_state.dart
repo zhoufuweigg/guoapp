@@ -2,115 +2,52 @@ import 'dart:math';
 
 import 'models.dart';
 
-enum FollowStatus {
-  planned('想看'),
-  watching('在看'),
-  watched('已看');
-
-  const FollowStatus(this.label);
-  final String label;
-}
-
 class FollowState {
   const FollowState({
-    this.status = FollowStatus.planned,
-    this.manuallyWatched = false,
     this.knownEpisodes = 0,
     this.readEpisodes,
     this.seriesSeasons = const {},
   });
 
-  final FollowStatus status;
-  final bool manuallyWatched;
   final int knownEpisodes;
   final int? readEpisodes;
   final Map<String, SeriesSeasonNotice> seriesSeasons;
 
   int get newEpisodes =>
       readEpisodes == null ? 0 : max(0, knownEpisodes - readEpisodes!);
-  int get newSeasons =>
-      seriesSeasons.values.where((notice) => !notice.read).length;
-  bool get hasUpdates => newEpisodes > 0 || newSeasons > 0;
-  String get updateLabel => [
-    if (newEpisodes > 0) '$newEpisodes 集更新',
-    if (newSeasons > 0) '新季 $newSeasons 部',
-  ].join(' · ');
-  String get label => manuallyWatched ? '已看 · 手动标记' : status.label;
+  bool get hasUpdates => newEpisodes > 0;
 
   FollowState copyWith({
-    FollowStatus? status,
-    bool? manuallyWatched,
     int? knownEpisodes,
     int? readEpisodes,
     Map<String, SeriesSeasonNotice>? seriesSeasons,
   }) => FollowState(
-    status: status ?? this.status,
-    manuallyWatched: manuallyWatched ?? this.manuallyWatched,
     knownEpisodes: knownEpisodes ?? this.knownEpisodes,
     readEpisodes: readEpisodes ?? this.readEpisodes,
     seriesSeasons: seriesSeasons ?? this.seriesSeasons,
   );
 
-  factory FollowState.initial(Drama drama, WatchEntry? watch) {
+  factory FollowState.initial(Drama drama) {
     final count = max(0, drama.episodes);
-    final state = FollowState(
+    return FollowState(
       knownEpisodes: count,
       readEpisodes: count > 0 ? count : null,
     );
-    return watch == null ? state : state.afterPlayback(watch);
   }
 
   FollowState observe(Drama drama) {
     final count = max(knownEpisodes, drama.episodes);
     return FollowState(
-      status:
-          !manuallyWatched &&
-              status == FollowStatus.watched &&
-              count > knownEpisodes
-          ? FollowStatus.watching
-          : status,
-      manuallyWatched: manuallyWatched,
       knownEpisodes: count,
       readEpisodes: readEpisodes ?? (count > 0 ? count : null),
       seriesSeasons: seriesSeasons,
     );
   }
 
-  FollowState afterPlayback(WatchEntry entry) {
-    final state = observe(entry.drama);
-    if (state.manuallyWatched || entry.position <= 0) return state;
-    return FollowState(
-      status:
-          state.knownEpisodes > 0 &&
-              entry.finished &&
-              entry.episode >= state.knownEpisodes
-          ? FollowStatus.watched
-          : FollowStatus.watching,
-      knownEpisodes: state.knownEpisodes,
-      readEpisodes: state.readEpisodes,
-      seriesSeasons: state.seriesSeasons,
-    );
-  }
-
-  FollowState withStatus(FollowStatus value) => FollowState(
-    status: value,
-    manuallyWatched: value == FollowStatus.watched,
-    knownEpisodes: knownEpisodes,
-    readEpisodes: value == FollowStatus.watched && knownEpisodes > 0
-        ? knownEpisodes
-        : readEpisodes,
-    seriesSeasons: seriesSeasons,
-  );
-
   FollowState markRead() => FollowState(
-    status: status,
-    manuallyWatched: manuallyWatched,
     knownEpisodes: knownEpisodes,
     readEpisodes: knownEpisodes > 0 ? knownEpisodes : null,
-    seriesSeasons: {
-      for (final entry in seriesSeasons.entries)
-        entry.key: entry.value.markRead(),
-    },
+    seriesSeasons: seriesSeasons,
   );
 
   FollowState markSeriesSeasonRead(String id) =>
@@ -122,9 +59,7 @@ class FollowState {
         );
 
   Map<String, dynamic> toJson() {
-    final value = {
-      'status': status.name,
-      'manuallyWatched': manuallyWatched,
+    final value = <String, dynamic>{
       'knownEpisodes': knownEpisodes,
       'readEpisodes': readEpisodes,
     };
@@ -138,12 +73,8 @@ class FollowState {
   }
 
   factory FollowState.fromJson(Map<String, dynamic> json) {
-    final status = FollowStatus.values
-        .where((value) => value.name == json['status'])
-        .firstOrNull;
     final known = json['knownEpisodes'];
     final read = json['readEpisodes'];
-    final manual = json['manuallyWatched'];
     final rawSeasons = json['seriesSeasons'];
     final seasons = <String, SeriesSeasonNotice>{};
     if (rawSeasons != null) {
@@ -162,18 +93,13 @@ class FollowState {
         seasons[notice.id] = notice;
       }
     }
-    if (status == null ||
-        known is! int ||
+    if (known is! int ||
         known < 0 ||
         known > 1000000 ||
-        read != null && (read is! int || read < 0 || read > known) ||
-        manual is! bool ||
-        manual && status != FollowStatus.watched) {
+        read != null && (read is! int || read < 0 || read > known)) {
       throw const FormatException('追剧状态无效');
     }
     return FollowState(
-      status: status,
-      manuallyWatched: manual,
       knownEpisodes: known,
       readEpisodes: read as int?,
       seriesSeasons: seasons,
@@ -237,6 +163,29 @@ class SeriesSeasonNotice {
       season: season,
       unit: unit,
       read: read,
+    );
+  }
+}
+
+class FollowCheck {
+  const FollowCheck(this.checkedAt, {this.failures = 0});
+
+  final DateTime checkedAt;
+  final int failures;
+
+  List<int> toJson() => [checkedAt.millisecondsSinceEpoch, failures];
+
+  factory FollowCheck.fromJson(Object? json) {
+    if (json is! List ||
+        json.length != 2 ||
+        json[0] is! int ||
+        json[1] is! int ||
+        (json[1] as int) < 0) {
+      throw const FormatException('追剧检查记录无效');
+    }
+    return FollowCheck(
+      DateTime.fromMillisecondsSinceEpoch(json[0] as int),
+      failures: json[1] as int,
     );
   }
 }

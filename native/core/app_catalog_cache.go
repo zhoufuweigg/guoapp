@@ -41,6 +41,7 @@ func (engine *nativeEngine) loadCatalogCache() {
 	if json.Unmarshal(body, &disk) == nil && (disk.Version == 2 || disk.Version == 3) {
 		if disk.Catalogs != nil {
 			engine.catalogs = disk.Catalogs
+			trimNativeCatalogs(engine.catalogs)
 			for _, items := range engine.catalogs {
 				for index := range items {
 					items[index] = migrateNativeDrama(items[index])
@@ -69,10 +70,19 @@ func (engine *nativeEngine) loadCatalogCache() {
 	var legacy map[string][]nativeDrama
 	if json.Unmarshal(body, &legacy) == nil && legacy != nil {
 		engine.catalogs = legacy
+		trimNativeCatalogs(engine.catalogs)
 		for _, items := range engine.catalogs {
 			for index := range items {
 				items[index] = migrateNativeDrama(items[index])
 			}
+		}
+	}
+}
+
+func trimNativeCatalogs(catalogs map[string][]nativeDrama) {
+	for key, items := range catalogs {
+		if len(items) > nativeCatalogMaxItems {
+			catalogs[key] = append([]nativeDrama(nil), items[:nativeCatalogMaxItems]...)
 		}
 	}
 }
@@ -245,6 +255,7 @@ func (engine *nativeEngine) saveCatalogCache(source string, result *nativeCatalo
 }
 
 func (engine *nativeEngine) writeCatalogDiskLocked() error {
+	trimNativeCatalogs(engine.catalogs)
 	body, err := json.Marshal(nativeCatalogDisk{Version: 3, Catalogs: engine.catalogs, States: engine.catalogStates, Categories: engine.categoryOptions, HongguoApp: engine.hongguoCatalog, Recommendations: engine.recommendations})
 	if err == nil && len(body) > nativeCatalogMaxBytes {
 		err = errNativeCatalogLimit
@@ -253,11 +264,6 @@ func (engine *nativeEngine) writeCatalogDiskLocked() error {
 		err = writeNativeCacheFile(filepath.Join(engine.directory, "catalogs.json"), body)
 	}
 	engine.catalogSaveError = nativeSaveError("剧库", err)
-	if err == nil {
-		engine.finishCatalogSaveLocked()
-	} else {
-		engine.markCatalogSavePendingLocked()
-	}
 	return engine.catalogSaveError
 }
 

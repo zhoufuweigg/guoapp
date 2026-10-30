@@ -7,8 +7,9 @@ class SourceSite {
   final String id;
   final String name;
   final String description;
-  bool get onlineSearch => id == 'hongguo' || pagedSearch;
+  bool get onlineSearch => pagedSearch;
   bool get pagedSearch =>
+      id == 'hongguo' ||
       id == 'huangju' ||
       id == 'yeguo' ||
       id == 'dsd' ||
@@ -38,10 +39,8 @@ class SourceSite {
     '韩剧 · 韩国电影 · 综艺动漫',
   );
 
-  /// 默认可见的站源：红果、韩小圈、鬼片网、青空次元。
   static const primaryValues = [hongguo, hanxiaoquan, guipian, sorani];
 
-  /// 敏感站源：默认隐藏，输入解锁密码后才显示。
   static const restrictedValues = [
     SourceSite('huangdou', '黄豆', '精选短剧'),
     SourceSite('huangju', '剧果', '热门 · 最新 · 分类短剧'),
@@ -56,16 +55,8 @@ class SourceSite {
   static const values = allSourcesEnabled ? knownValues : [hongguo];
   static bool isAvailable(String id) => values.any((site) => site.id == id);
   static bool isKnown(String id) => allValues.any((site) => site.id == id);
-  static bool isPrimary(String id) =>
-      primaryValues.any((site) => site.id == id);
   static bool isRestricted(String id) =>
       restrictedValues.any((site) => site.id == id);
-
-  /// 运行时可见站源：未解锁时只保留 [primaryValues]。
-  static List<SourceSite> visibleValues({required bool unlocked}) => [
-    for (final site in values)
-      if (unlocked || isPrimary(site.id)) site,
-  ];
   static SourceSite byId(String id) =>
       allValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
 }
@@ -230,12 +221,14 @@ class Episode {
       number = intValue(raw['currentEpisode']) > 0
           ? intValue(raw['currentEpisode'])
           : fallback,
-      vip = raw['vip'] == true;
+      vip = raw['vip'] == true,
+      vertical = raw['vertical'] as bool?;
   final Map<String, dynamic> raw;
   final String id;
   final String title;
   final int number;
   final bool vip;
+  final bool? vertical;
 }
 
 class DramaDetail {
@@ -393,9 +386,11 @@ class DownloadJob {
   bool get completed => state == 'completed';
   bool get active => state == 'queued' || state == 'downloading';
   bool get resumable => state == 'paused' || state == 'failed';
+  bool get converting => state == 'converting';
   String get stateLabel => switch (state) {
     'queued' => '等待下载',
     'downloading' => '正在下载',
+    'converting' => '正在处理',
     'paused' => '已暂停',
     'failed' => '下载失败',
     'completed' => '已下载',
@@ -421,6 +416,8 @@ class DownloadJob {
     archived: value['archived'] == true,
   );
 }
+
+typedef DownloadConversion = ({String input, String key, String output});
 
 List<Map<String, dynamic>> readJsonList(String? value) {
   try {

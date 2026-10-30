@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:path/path.dart' as path;
 
@@ -9,9 +10,13 @@ import 'media_pipeline.dart';
 class CoverDecoder {
   CoverDecoder({MediaExecutor Function()? createExecutor})
     : _createExecutor = createExecutor ?? FFmpegExecutor.new;
+  static const _workers = 3;
   final MediaExecutor Function() _createExecutor;
   final _pending = <String, Future<String>>{};
-  Future<void> _tail = Future.value();
+  final _queue = <Future<void> Function()>[];
+  var _running = 0;
+  var _pruning = false;
+  DateTime? _prunedAt;
 
   Future<String> convert(
     String original,
@@ -34,17 +39,53 @@ class CoverDecoder {
     }
     if (_pending.containsKey(key)) return _pending[key]!;
     if (_pending.length >= 96) throw AppFailure('海报正在处理，请稍后重试');
-    final result = _tail.then((_) => _convert(original, target, prepare));
-    _tail = result.then<void>(
-      (_) {},
-      onError: (Object error, StackTrace stack) {},
-    );
+    final result = _schedule(() => _convert(original, target, prepare));
     _pending[key] = result;
     try {
       return await result;
     } finally {
       if (identical(_pending[key], result)) _pending.remove(key);
     }
+  }
+
+  Future<String> _schedule(Future<String> Function() job) {
+    final completer = Completer<String>();
+    _queue.add(
+      () => job()
+          .then(completer.complete, onError: completer.completeError)
+          .whenComplete(() {
+            _running--;
+            _drain();
+          }),
+    );
+    _drain();
+    return completer.future;
+  }
+
+  void _drain() {
+    while (_running < _workers && _queue.isNotEmpty) {
+      _running++;
+      unawaited(_queue.removeLast()());
+    }
+  }
+
+  void _schedulePrune(String directory, String keep) {
+    final now = DateTime.now();
+    if (_pruning ||
+        _prunedAt != null &&
+            now.difference(_prunedAt!) < const Duration(seconds: 30)) {
+      return;
+    }
+    _pruning = true;
+    _prunedAt = now;
+    unawaited(
+      _pruneInBackground(
+        directory,
+        keep,
+      ).then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
+        _pruning = false;
+      }),
+    );
   }
 
   Future<bool> _isJPEG(File file) async {
@@ -120,7 +161,7 @@ class CoverDecoder {
       if (!await _isJPEG(intermediate)) throw AppFailure('海报转换未生成有效图片');
       if (await target.exists()) await target.delete();
       await intermediate.rename(target.path);
-      await _prune(target.parent, target.path);
+      _schedulePrune(target.parent.path, target.path);
       return target.path;
     } on TimeoutException {
       await executor.cancel();
@@ -139,16 +180,19 @@ class CoverDecoder {
     }
   }
 
-  Future<void> _prune(Directory directory, String keep) async {
+  static Future<void> _pruneInBackground(String directory, String keep) =>
+      Isolate.run(() => _prune(Directory(directory), keep));
+
+  static void _prune(Directory directory, String keep) {
     final entries = <(File, FileStat)>[];
     var size = 0;
-    await for (final entry in directory.list(followLinks: false)) {
+    for (final entry in directory.listSync(followLinks: false)) {
       if (entry is! File) continue;
-      final stat = await entry.stat();
+      final stat = entry.statSync();
       if (entry.path.endsWith('.part')) {
         if (DateTime.now().difference(stat.modified) >
             const Duration(minutes: 1)) {
-          await entry.delete();
+          entry.deleteSync();
         }
       } else if (entry.path.endsWith('.jpg')) {
         entries.add((entry, stat));
@@ -158,9 +202,9 @@ class CoverDecoder {
     entries.sort((a, b) => a.$2.modified.compareTo(b.$2.modified));
     var count = entries.length;
     for (final entry in entries) {
-      if (count <= 128 && size <= 64 * 1024 * 1024) break;
+      if (count <= 1000 && size <= 96 * 1024 * 1024) break;
       if (entry.$1.path == keep) continue;
-      await entry.$1.delete();
+      entry.$1.deleteSync();
       count--;
       size -= entry.$2.size;
     }

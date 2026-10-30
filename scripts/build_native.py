@@ -49,9 +49,9 @@ if options.platform == 'android':
     host = {'Darwin': 'darwin-x86_64', 'Linux': 'linux-x86_64', 'Windows': 'windows-x86_64'}[platform.system()]
     compilers = ndk / 'toolchains' / 'llvm' / 'prebuilt' / host / 'bin'
     mappings = {
-        'arm64-v8a': ('arm64', 'aarch64-linux-android26-clang'),
-        'armeabi-v7a': ('arm', 'armv7a-linux-androideabi26-clang'),
-        'x86_64': ('amd64', 'x86_64-linux-android26-clang'),
+        'arm64-v8a': ('arm64', 'aarch64-linux-android24-clang'),
+        'armeabi-v7a': ('arm', 'armv7a-linux-androideabi24-clang'),
+        'x86_64': ('amd64', 'x86_64-linux-android24-clang'),
     }
     for abi in options.abi or list(mappings):
         architecture, name = mappings[abi]
@@ -70,8 +70,21 @@ elif options.platform == 'windows':
     build('windows', 'amd64', compiler, root / 'windows' / 'runner' / 'duanju_core.dll',
           {'CGO_LDFLAGS': '-static-libgcc'})
 else:
+    if platform.system() != 'Darwin':
+        raise SystemExit('macOS 核心需要在 macOS 上构建。')
     compiler = shutil.which('clang')
     if not compiler:
         raise SystemExit('需要安装 Xcode Command Line Tools。')
-    build('darwin', 'arm64' if platform.machine() == 'arm64' else 'amd64', compiler,
-          root / 'native' / 'build' / 'darwin' / 'libduanju_core.dylib')
+    output = root / 'macos' / 'DuanjuCore' / 'libDuanjuCore.a'
+    slices = []
+    for architecture, triple in [('arm64', 'arm64-apple-macos12.0'), ('amd64', 'x86_64-apple-macos12.0')]:
+        library = root / 'native' / 'build' / 'macos' / architecture / 'libDuanjuCore.a'
+        library.parent.mkdir(parents=True, exist_ok=True)
+        print('Building ' + str(library.relative_to(root)), flush=True)
+        build_env = environment | {'GOOS': 'darwin', 'GOARCH': architecture, 'CC': str(compiler),
+                                   'CGO_CFLAGS': '-target ' + triple, 'CGO_LDFLAGS': '-target ' + triple}
+        subprocess.run([go, 'build', '-trimpath', '-buildmode=c-archive',
+                        '-ldflags=' + variant.linker_flags, '-o', str(library), './bridge'],
+                       cwd=root / 'native', env=build_env, check=True)
+        slices.append(str(library))
+    subprocess.run(['lipo', '-create', *slices, '-output', str(output)], check=True)

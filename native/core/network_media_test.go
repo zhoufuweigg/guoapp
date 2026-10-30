@@ -97,7 +97,7 @@ func TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken(t *testing.T)
 	if len(match) != 2 || read(match[1]) != "0123456789abcdef" {
 		t.Fatal("player did not receive source key")
 	}
-	engine := &nativeEngine{downloader: d, directory: d.cfg.dataDir}
+	engine := &nativeEngine{downloader: d, directory: d.cfg.dataDir, defaultDownloads: nativeDefaultDownloads(d.cfg.dataDir)}
 	manager := newNativeDownloads(engine)
 	engine.downloads = manager
 	t.Cleanup(manager.close)
@@ -176,7 +176,7 @@ func TestLegacyPlaybackAndDownloadUseAuthenticatedPlaylistAndSourceKey(t *testin
 	if err != nil || media.Duration.Seconds() != 4 {
 		t.Fatal("legacy resolver failed", err)
 	}
-	engine := &nativeEngine{downloader: d, directory: d.cfg.dataDir}
+	engine := &nativeEngine{downloader: d, directory: d.cfg.dataDir, defaultDownloads: nativeDefaultDownloads(d.cfg.dataDir)}
 	manager := newNativeDownloads(engine)
 	engine.downloads = manager
 	t.Cleanup(manager.close)
@@ -216,5 +216,15 @@ func TestVideoEpisodeParsingPrefersNumberedLinksOverStartButton(t *testing.T) {
 	episodes := parseHuangguoVideoEpisodes(body, "https://huangguo.video/series/synthetic")
 	if len(episodes) != 2 || episodes[0].Key != "video/one" || episodes[1].Index != 2 {
 		t.Fatal("start button replaced an episode", episodes)
+	}
+}
+
+func TestAIEpisodeParsingIgnoresOtherDramaLinks(t *testing.T) {
+	body := `<a class="hot" href="/video/900/">热门</a><a class="card" href="/video/901/ep-2/">推荐</a>` +
+		`<a class="hg-play__ep-item" href="/video/12/" data-ep-id="1">01</a><a class="hg-play__ep-item" href="/video/12/ep-2/" data-ep-id="2">02</a>` +
+		`<a class="card" href="/video/902/">推荐</a>`
+	episodes := parseHuangguoAIEpisodes(body, "https://huangguoai.com/detail/12/", "12")
+	if len(episodes) != 2 || episodes[0].URL != "https://huangguoai.com/video/12/" || episodes[1].URL != "https://huangguoai.com/video/12/ep-2/" || episodes[1].Index != 2 {
+		t.Fatal("episodes included links from other dramas", episodes)
 	}
 }

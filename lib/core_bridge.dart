@@ -13,12 +13,13 @@ import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'local_store.dart';
 import 'app_build.dart';
-import 'source_status.dart';
 import 'ranking_models.dart';
 import 'cover_decoder.dart';
 import 'catalog_updates.dart';
 import 'download_collections.dart';
 import 'resource_settings.dart';
+import 'diary_service.dart';
+import 'app_update.dart';
 
 typedef _NativeRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -33,10 +34,10 @@ String _nativeRequest(String body) {
     library = DynamicLibrary.open(
       path.join(path.dirname(Platform.resolvedExecutable), 'duanju_core.dll'),
     );
-  } else if (Platform.isIOS) {
+  } else if (Platform.isIOS || Platform.isMacOS) {
     library = DynamicLibrary.process();
   } else {
-    throw UnsupportedError('当前首版支持 Android 手机和 Windows 电脑');
+    throw UnsupportedError('当前支持 Android、iOS、Windows 和 macOS');
   }
   final request = library.lookupFunction<_NativeRequest, _DartRequest>(
     'DuanjuRequest',
@@ -67,16 +68,6 @@ class AppFailure implements Exception {
 }
 
 abstract class AppRepository {
-  Future<Map<String, dynamic>> lan(
-    String command,
-    Map<String, dynamic> payload,
-  ) async => throw AppFailure('当前环境不支持设备互联');
-  Future<PlaybackPlan?> prepareHandoff(
-    Drama drama,
-    Episode episode, {
-    int quality = 0,
-  }) => preload(drama, episode, quality: quality);
-  Future<void> cancelHandoff() async {}
   Future<ResourceSettings> resourceSettings() async => const ResourceSettings();
   Future<ResourceSettings> saveResourceSettings(
     ResourceSettings settings,
@@ -99,6 +90,7 @@ abstract class AppRepository {
   Future<void> cancelSuggestions() async {}
   Future<void> cancelRecommendations() async {}
   Future<Drama?> supplementMetadata(Drama drama) async => null;
+  Future<Drama> followCheck(Drama drama) async => (await detail(drama)).drama;
   Future<CatalogPage> recommendations(
     String genre, {
     bool more = false,
@@ -115,15 +107,6 @@ abstract class AppRepository {
     bool force = false,
   }) async => const [CatalogCategory.all];
   bool get supportsSourceManagement => false;
-  Future<SourceStatus> sourceStatus(String source) async =>
-      SourceStatus.fromJson({'source': source});
-  Future<SourceStatus> startSourceJob(
-    String source,
-    String operation, {
-    Drama? drama,
-  }) async => throw AppFailure('当前环境不支持站源管理');
-  Future<SourceStatus> cancelSourceJob(String source) async =>
-      throw AppFailure('当前环境不支持站源管理');
   Future<List<String>> suggestions(String query) async => const [];
   Future<Map<String, dynamic>> storage() async => {};
   Future<String> downloadDirectory() async =>
@@ -139,12 +122,13 @@ abstract class AppRepository {
     int quality = 0,
   }) async => throw AppFailure('当前环境不支持下载');
   Future<void> controlDownloads(String command, {String id = ''}) async {}
+  Future<DownloadConversion> beginConversion(String id) async =>
+      throw AppFailure('当前环境不支持处理下载');
+  Future<void> finishConversion(String id, String result) async {}
   Future<DownloadBatchResult> controlDownloadBatch(
     String command,
-    List<String> ids, {
-    Map<String, String> expectedVersions = const {},
-  }) async {
-    if (expectedVersions.isNotEmpty) throw AppFailure('当前环境不支持校验后清理原分集');
+    List<String> ids,
+  ) async {
     final completed = <String>[], failures = <String, String>{};
     for (final id in ids.toSet()) {
       try {
@@ -169,6 +153,8 @@ abstract class AppRepository {
     Episode episode, {
     int quality = 0,
   }) => resolve(drama, episode, quality: quality);
+  Future<AppUpdate?> checkUpdate(String version) async => null;
+  Future<void> reportUsage(String version) async {}
   Future<void> initialize();
   Future<CatalogPage> catalog(
     String source, {
@@ -179,6 +165,7 @@ abstract class AppRepository {
   });
   Future<CatalogPage> cached(String source, {String category = ''});
   Future<String> cover(Drama drama, {bool force = false});
+  bool coverCached(Drama drama) => false;
   Future<DramaDetail> detail(Drama drama);
   Future<PlaybackPlan> resolve(Drama drama, Episode episode, {int quality = 0});
   Future<PlaybackPlan> fallback(PlaybackPlan current);
@@ -188,38 +175,13 @@ abstract class AppRepository {
 
 class NativeRepository extends AppRepository {
   static final _coverDecoder = CoverDecoder();
+  static final _coverPaths = <String, String>{};
   NativeRepository({this.background = false});
   final bool background;
   LocalStore? access;
   final _readOwner = DateTime.now().microsecondsSinceEpoch.toString();
   int _readSequence = 0;
   final _activeReads = <String, int>{};
-
-  @override
-  Future<Map<String, dynamic>> lan(
-    String command,
-    Map<String, dynamic> payload,
-  ) => _call({'action': 'lan', 'command': command, 'lan': payload});
-
-  @override
-  Future<PlaybackPlan?> prepareHandoff(
-    Drama drama,
-    Episode episode, {
-    int quality = 0,
-  }) async {
-    final data = await _read('handoff', {
-      'action': 'prepareHandoff',
-      'drama': drama.toJson(),
-      'chapter': episode.raw,
-      'index': episode.number,
-      'quality': quality,
-      'force': access != null && !access!.canDownload,
-    });
-    return PlaybackPlan.fromJson(data);
-  }
-
-  @override
-  Future<void> cancelHandoff() => _cancelReads('handoff');
 
   void _adminPermission() {
     if (access != null && (access!.locked || !access!.profile.admin)) {
@@ -367,6 +329,16 @@ class NativeRepository extends AppRepository {
   }
 
   @override
+  Future<Drama> followCheck(Drama drama) async {
+    _authorize(drama.source);
+    final result = await _call({
+      'action': 'followCheck',
+      'drama': drama.toJson(),
+    });
+    return Drama.fromJson(Map<String, dynamic>.from(result['drama'] as Map));
+  }
+
+  @override
   bool get supportsSourceManagement => true;
 
   @override
@@ -397,39 +369,6 @@ class NativeRepository extends AppRepository {
       'force': force,
     }),
   );
-
-  @override
-  Future<SourceStatus> sourceStatus(String source) async =>
-      SourceStatus.fromJson(
-        await _call({'action': 'sourceStatus', 'source': source}),
-      );
-
-  @override
-  Future<SourceStatus> startSourceJob(
-    String source,
-    String operation, {
-    Drama? drama,
-  }) async {
-    _authorize(source);
-    if (drama != null && drama.source != source) throw AppFailure('站源与剧集不匹配');
-    final epoch = access?.profileEpoch;
-    await BackgroundDownloads.ensureStarted();
-    if (epoch != access?.profileEpoch) throw AppFailure('用户已切换，请重新操作');
-    return SourceStatus.fromJson(
-      await _call({
-        'action': 'sourceJob',
-        'source': source,
-        'command': operation,
-        if (drama != null) 'drama': drama.toJson(),
-      }),
-    );
-  }
-
-  @override
-  Future<SourceStatus> cancelSourceJob(String source) async =>
-      SourceStatus.fromJson(
-        await _call({'action': 'cancelSourceJob', 'source': source}),
-      );
 
   void _authorize(String source, {bool download = false}) {
     if (!SourceSite.isAvailable(source)) {
@@ -498,6 +437,22 @@ class NativeRepository extends AppRepository {
   );
   int _playbackSequence = DateTime.now().microsecondsSinceEpoch;
 
+  @override
+  Future<AppUpdate?> checkUpdate(String version) async {
+    final result = await _call({'action': 'checkUpdate', 'version': version});
+    return result['available'] == true
+        ? AppUpdate(
+            version: result['version'] as String,
+            url: result['url'] as String,
+          )
+        : null;
+  }
+
+  @override
+  Future<void> reportUsage(String version) async {
+    await _call({'action': 'reportUsage', 'version': version});
+  }
+
   Future<Map<String, dynamic>> _call(Map<String, dynamic> input) async {
     try {
       final action = input['action'] as String;
@@ -510,6 +465,7 @@ class NativeRepository extends AppRepository {
             'updateSystemProxy',
           }.contains(action) ||
           action == 'workLease' && input['command'] == 'end' ||
+          action == 'finishConversion' ||
           action == 'lan' &&
               {
                 'stop',
@@ -528,14 +484,7 @@ class NativeRepository extends AppRepository {
           action == 'danmaku') {
         _authorize('hongguo');
       }
-      if ({
-        'catalog',
-        'cached',
-        'categories',
-        'sourceStatus',
-        'sourceJob',
-        'cancelSourceJob',
-      }.contains(action)) {
+      if ({'catalog', 'cached', 'categories'}.contains(action)) {
         _authorize(input['source'] as String);
       }
       if ({
@@ -545,7 +494,6 @@ class NativeRepository extends AppRepository {
         'metadata',
         'resolve',
         'preload',
-        'prepareHandoff',
         'enqueueDownloads',
         'localPlayback',
       }.contains(action)) {
@@ -559,6 +507,7 @@ class NativeRepository extends AppRepository {
             'downloads',
             'controlDownloads',
             'controlDownloadBatch',
+            'beginConversion',
             'storage',
             'downloadDirectory',
             'moveDownloads',
@@ -570,18 +519,20 @@ class NativeRepository extends AppRepository {
         input['force'] = true;
       }
       final body = jsonEncode(input);
-      final encoded = await Isolate.run(() => _nativeRequest(body)).timeout(
-        Duration(
-          seconds: action == 'moveDownloads'
-              ? 620
-              : action == 'danmaku'
-              ? 15
-              : action == 'preload'
-              ? 20
-              : 70,
-        ),
-      );
-      final response = jsonDecode(encoded) as Map<String, dynamic>;
+      final response =
+          await Isolate.run(
+            () => jsonDecode(_nativeRequest(body)) as Map<String, dynamic>,
+          ).timeout(
+            Duration(
+              seconds: action == 'moveDownloads'
+                  ? 620
+                  : action == 'danmaku'
+                  ? 15
+                  : action == 'preload'
+                  ? 20
+                  : 70,
+            ),
+          );
       if (response['ok'] != true) {
         throw AppFailure(
           response['error'] as String? ?? '读取失败，请重试',
@@ -612,7 +563,6 @@ class NativeRepository extends AppRepository {
             'metadata',
             'danmaku',
             'preload',
-            'prepareHandoff',
           }.contains(input['action'])) {
         unawaited(
           _call({
@@ -631,9 +581,16 @@ class NativeRepository extends AppRepository {
   @override
   Future<void> initialize() async {
     final directory = await getApplicationSupportDirectory();
+    if (!background) {
+      DiaryService.nativeLogPath = path.join(directory.path, 'logs', 'app.log');
+    }
+    final external = Platform.isAndroid
+        ? await getExternalStorageDirectory()
+        : null;
     final build = await _call({
       'action': 'initialize',
       'directory': directory.path,
+      if (external != null) 'downloads': path.join(external.path, 'downloads'),
     });
     if (build['allSources'] != allSourcesEnabled) {
       throw AppFailure('应用与原生核心的站源版本不一致，请使用完整安装包重新安装');
@@ -670,7 +627,7 @@ class NativeRepository extends AppRepository {
     String category = '',
     bool force = false,
   }) async => CatalogPage.fromJson(
-    await _read('catalog-$source', {
+    await _read(query.isEmpty ? 'catalog-$source' : 'catalog-$source-search', {
       'action': 'catalog',
       'source': source,
       'page': page,
@@ -689,7 +646,18 @@ class NativeRepository extends AppRepository {
         }),
       );
   @override
+  bool coverCached(Drama drama) =>
+      _coverPaths.containsKey('${drama.id}\u0000${drama.cover}');
+
+  @override
   Future<String> cover(Drama drama, {bool force = false}) async {
+    final key = '${drama.id}\u0000${drama.cover}';
+    final known = force ? null : _coverPaths[key];
+    if (known != null) {
+      _authorize(drama.source);
+      if (await File(known).exists()) return known;
+      _coverPaths.remove(key);
+    }
     final epoch = access?.profileEpoch;
     final result = await _call({
       'action': 'cover',
@@ -698,7 +666,7 @@ class NativeRepository extends AppRepository {
     });
     final file = result['path'] as String? ?? '';
     if (file.isEmpty) throw AppFailure('海报暂不可用');
-    if (result['heic'] != true) return file;
+    if (result['heic'] != true) return _rememberCover(key, file);
     final converted = await _coverDecoder.convert(
       file,
       () => _call({'action': 'prepareCover', 'drama': drama.toJson()}),
@@ -706,7 +674,14 @@ class NativeRepository extends AppRepository {
     );
     _authorize(drama.source);
     if (epoch != access?.profileEpoch) throw AppFailure('用户已切换，请重新操作');
-    return converted;
+    return _rememberCover(key, converted);
+  }
+
+  String _rememberCover(String key, String path) {
+    _coverPaths.remove(key);
+    _coverPaths[key] = path;
+    if (_coverPaths.length > 2000) _coverPaths.remove(_coverPaths.keys.first);
+    return path;
   }
 
   @override
@@ -805,9 +780,8 @@ class NativeRepository extends AppRepository {
   @override
   Future<DownloadBatchResult> controlDownloadBatch(
     String command,
-    List<String> ids, {
-    Map<String, String> expectedVersions = const {},
-  }) async {
+    List<String> ids,
+  ) async {
     _downloadPermission();
     final epoch = access?.profileEpoch;
     if (ids.isEmpty || ids.length > 500) throw AppFailure('每批请选择 1 至 500 个任务');
@@ -822,7 +796,6 @@ class NativeRepository extends AppRepository {
         'action': 'controlDownloadBatch',
         'command': command,
         'jobIds': ids,
-        if (expectedVersions.isNotEmpty) 'expectedVersions': expectedVersions,
       }),
     );
   }
@@ -856,6 +829,21 @@ class NativeRepository extends AppRepository {
       'command': command,
       'jobId': id,
     });
+  }
+
+  @override
+  Future<DownloadConversion> beginConversion(String id) async {
+    final result = await _call({'action': 'beginConversion', 'jobId': id});
+    return (
+      input: result['input'] as String? ?? '',
+      key: result['key'] as String? ?? '',
+      output: result['output'] as String? ?? '',
+    );
+  }
+
+  @override
+  Future<void> finishConversion(String id, String result) async {
+    await _call({'action': 'finishConversion', 'jobId': id, 'command': result});
   }
 
   @override

@@ -75,7 +75,6 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 		}
 		defer release()
 	}
-	// 与黄剧客户端一致：接口请求不携带共享 Cookie Jar，且只允许同源重定向。
 	transport := *d.client
 	transport.Jar = nil
 	previousRedirect := transport.CheckRedirect
@@ -97,7 +96,6 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	if d.limiter != nil {
 		d.limiter.observe(request, response)
 	}
-	observeSourceResponse(ctx, response)
 	blocked := catalogResponseBlockReason(response, data) != ""
 	if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
 		return nil, d.catalogResponseError(request, response, data)
@@ -114,7 +112,6 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("青空次元返回的数据格式无效")
 	}
-	// 上游统一用 code=200 表示成功；非 200 一律视为业务错误。
 	if row, ok := decoded.(map[string]any); ok {
 		if code := nativeText(row["code"]); code != "" && code != "200" {
 			message := mapString(row, "message", "msg")

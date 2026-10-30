@@ -202,7 +202,6 @@ func (client *huangjuAPIClient) request(ctx context.Context, method, route strin
 	if d.limiter != nil {
 		d.limiter.observe(request, response)
 	}
-	observeSourceResponse(ctx, response)
 	if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
 		return huangjuAPIResponse{}, d.catalogResponseError(request, response, data)
 	}

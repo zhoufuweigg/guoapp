@@ -1,22 +1,18 @@
 name: Build app packages
 
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: app-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   GOPROXY: https://proxy.golang.org,direct
   GOSUMDB: sum.golang.org
+  UPDATE_SERVER_URL: ${{ vars.UPDATE_SERVER_URL }}
 
 jobs:
   checks:
@@ -24,22 +20,22 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
-      - uses: actions/setup-go@v5
+      - &setup-go
+        uses: actions/setup-go@v5
         with:
           go-version-file: native/go.mod
           cache-dependency-path: native/go.sum
-      - uses: subosito/flutter-action@v2
+      - &setup-flutter
+        uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.4'
           channel: stable
           cache: true
-      - run: flutter pub get
-      - run: dart format --output=none --set-exit-if-changed lib test integration_test test_driver
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --output=none --set-exit-if-changed lib test
         continue-on-error: true
-      - run: dart analyze lib test integration_test test_driver
+      - run: dart analyze --fatal-infos lib test
         continue-on-error: true
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       # 测试当前不阻塞出包（开发优先、集中验证暂缓），结果仍会显示在运行详情里。
       - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true
         continue-on-error: true
@@ -52,10 +48,41 @@ jobs:
         working-directory: native
         continue-on-error: true
 
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "只能从 main 分支手动发布，当前为 $GITHUB_REF。" >&2
+            exit 1
+          fi
+          version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
+          if [ -z "$version" ]; then
+            echo "pubspec.yaml 缺少 version。" >&2
+            exit 1
+          fi
+          tag="app-v${version//+/-}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || gh release view "$tag" >/dev/null 2>&1; then
+            echo "版本 $version（$tag）已发布过，请先提升 pubspec.yaml 的 version。" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   android:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy:
+    strategy: &editions
       fail-fast: false
       matrix:
         include:
@@ -65,22 +92,16 @@ jobs:
             arguments: '--all-sources'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - &setup-python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: native/go.mod
-          cache-dependency-path: native/go.sum
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.47.4'
-          channel: stable
-          cache: true
+      - *setup-go
+      - *setup-flutter
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -88,30 +109,31 @@ jobs:
           accept-android-sdk-licenses: true
       - run: sdkmanager 'ndk;28.2.13676358'
       - name: Configure Android signing
-        id: signing
-        run: |
-          python scripts/configure_signing.py
-          if [ -f android/key.properties ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::未配置发布签名 Secrets，本次 APK 使用 debug 签名，仅供测试，不可用于正式分发。"
-          fi
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "未配置签名 Secrets，拒绝发布 debug 签名的 APK。" >&2
+            exit 1
+          fi
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - run: python scripts/build_android.py ${{ matrix.arguments }}
+        env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      - run: python scripts/build_android.py ${{ matrix.arguments }}
       - name: 校验 APK 签名证书
-        if: steps.signing.outputs.release == 'true'
         shell: bash
+        env:
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          expected='${{ vars.ANDROID_CERT_SHA256 }}'
+          expected=$(printf '%s' "$ANDROID_CERT_SHA256" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
           if [ -z "$expected" ]; then
-            echo "未设置仓库变量 ANDROID_CERT_SHA256，跳过证书指纹比对。" >&2
-            exit 0
+            echo "未设置仓库变量 ANDROID_CERT_SHA256，无法确认发布证书。" >&2
+            exit 1
           fi
           apksigner=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f 2>/dev/null | sort | tail -n1 || true)
           if [ -z "$apksigner" ]; then
@@ -124,55 +146,117 @@ jobs:
             echo "== $(basename "$apk")"
             output=$("$apksigner" verify --print-certs "$apk" 2>&1 || true)
             printf '%s\n' "$output"
-            if ! printf '%s' "$output" | tr -d ':' | tr '[:upper:]' '[:lower:]' | grep -q "$expected"; then
+            if ! printf '%s' "$output" | tr -d ':' | tr '[:upper:]' '[:lower:]' | grep "$expected" >/dev/null; then
               echo "签名证书与发布证书不一致，已终止。" >&2
               exit 1
             fi
           done
-      - name: Remove signing files
-        if: always()
-        run: python scripts/configure_signing.py --clean
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.edition }}-android
           path: dist/android/*
           if-no-files-found: error
           retention-days: 14
+
   windows:
-    if: false
-    needs: checks
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - edition: hongguojian
-            arguments: ''
-          - edition: zhenguojian
-            arguments: '--all-sources'
+    strategy: *editions
     steps:
       - uses: actions/checkout@v4
+      - *setup-go
+      - *setup-python
+      - *setup-flutter
+      - name: Set up MinGW-w64
+        shell: pwsh
+        run: |
+          choco install mingw --no-progress -y
+          $exe = Get-ChildItem -Path 'C:\ProgramData\mingw64', 'C:\ProgramData\chocolatey\lib\mingw' `
+                   -Recurse -Include 'x86_64-w64-mingw32-gcc.exe', 'gcc.exe' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) { $exe = (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue).Source }
+          if (-not $exe) { throw 'MinGW-w64 安装失败，找不到 gcc' }
+          Split-Path $exe | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $exe --version | Select-Object -First 1
+      - run: python scripts/build_windows.py ${{ matrix.arguments }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.edition }}-windows
+          path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 14
 
   ios:
-    if: false
-    needs: checks
+    needs: prepare
     runs-on: macos-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - edition: hongguojian
-            arguments: ''
-          - edition: zhenguojian
-            arguments: '--all-sources'
+    strategy: *editions
     steps:
       - uses: actions/checkout@v4
+      - *setup-python
+      - *setup-go
+      - *setup-flutter
+      - name: Check Xcode and CocoaPods
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --find clang
+          if ! command -v pod >/dev/null 2>&1; then
+            brew install cocoapods
+          fi
+          pod --version
+          go version
+          flutter --version
+          flutter precache --ios
+      - name: Build unsigned iOS packages
+        run: python scripts/build_ios.py ${{ matrix.arguments }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.edition }}-ios-unsigned
+          path: dist/ios/*
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy: *editions
+    steps:
+      - uses: actions/checkout@v4
+      - *setup-python
+      - *setup-go
+      - *setup-flutter
+      - name: Check Xcode and CocoaPods
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+          if ! command -v pod >/dev/null 2>&1; then
+            brew install cocoapods
+          fi
+          pod --version
+          python -m pip install dmgbuild Pillow
+          go version
+          flutter --version
+          flutter precache --macos
+      - name: Build macOS packages
+        run: python scripts/build_macos.py ${{ matrix.arguments }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.edition }}-macos
+          path: dist/macos/*
+          if-no-files-found: error
+          retention-days: 14
 
   release:
-    needs: [android]
-    if: always() && needs.android.result == 'success'
+    needs: [checks, prepare, android, windows, ios, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -181,68 +265,70 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-      - name: 生成发布文件清单
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
-          mkdir -p release
-          for directory in artifacts/*/; do
-            for file in "$directory"*; do
-              [ -f "$file" ] || continue
-              name=$(basename "$file")
-              if [ "$name" = "SHA256SUMS.txt" ]; then
-                continue
-              fi
-              cp "$file" "release/$name"
-            done
-          done
-          cd release
-          mapfile -t files < <(find . -maxdepth 1 -type f -printf '%f\n' | sort)
-          sha256sum "${files[@]}" > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          path: release
+          merge-multiple: true
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
-          tag="app-v${version//+/-}"
-          apk_note="Android（已用固定发布证书签名，可覆盖安装升级，无需卸载）："
-          if printf '%s\n' "${{ vars.ANDROID_CERT_SHA256 }}" | grep -q .; then
-            apk_note="Android（已用固定发布证书签名，可覆盖安装升级，无需卸载）："
-          else
-            apk_note="Android（未配置发布签名，当前为 debug 签名，仅供测试，不能覆盖正式版安装）："
+          cat > notes.md <<EOF
+          版本 ${VERSION}。两个版本功能相同，区别只在站源范围，按需选择：
+
+          - 红果鉴 hongguojian：仅红果站源
+          - 真果鉴 zhenguojian：全部站源
+
+          Android：
+          - *-arm64-v8a.apk：适用于较新的安卓设备
+          - *-armeabi-v7a.apk：适用于较老的安卓设备，电视推荐使用此版本
+          - *-x86_64.apk：适用于模拟器
+
+          iOS：
+          - *-ios-unsigned.ipa：未签名 IPA，可用相关工具安装
+
+          Windows：
+          - *-windows-x64.zip：解压后运行 hongguojian.exe 或 zhenguojian.exe
+
+          macOS：
+          - *-macos-universal.dmg：适用于 macOS 12 及以上的 Apple 芯片和 Intel 电脑，打开后拖入 Applications；未经公证，首次打开前在终端执行 xattr -dr com.apple.quarantine /Applications/红果鉴.app（真果鉴为 真果鉴.app）
+
+          签名证书 SHA-256：${ANDROID_CERT_SHA256}
+          EOF
+          changes="$(awk -v heading="## ${VERSION}" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found && !started && /^[[:space:]]*$/ { next }
+            found { started = 1; print }
+          ' CHANGELOG.md)"
+          printf '%s' "$changes" > changes.md
+          if [ -n "$changes" ]; then
+            { printf '更新内容：\n\n%s\n\n' "$changes"; cat notes.md; } > notes.tmp
+            mv notes.tmp notes.md
           fi
-          {
-            printf '%s\n\n' "版本 ${version}。两个版本功能相同，区别只在站源范围，按需选择："
-            printf '%s\n' "- 红果鉴 hongguojian：仅红果站源"
-            printf '%s\n' "- 真果鉴 zhenguojian：全部站源"
-            printf '\n%s\n' "$apk_note"
-            printf '%s\n' "- *-arm64-v8a.apk：绝大多数手机选这个"
-            printf '%s\n' "- *-armeabi-v7a.apk：较老的 32 位手机"
-            printf '%s\n' "- *-x86_64.apk：模拟器"
-            printf '\n%s\n' "iOS（未签名，需自行签名后才能安装）："
-            printf '%s\n' "- *-ios-unsigned.ipa：未签名 IPA，用 AltStore / Sideloadly / TrollStore 等工具自签后安装"
-            printf '%s\n' "- *-ios-unsigned-app.zip：未签名 Runner.app 压缩包，供自行签名 / 打包使用"
-            printf '\n%s\n' "Windows（解压后运行 hongguojian.exe 或 zhenguojian.exe）："
-            printf '%s\n' "- *-windows-x64.zip：Windows 10/11 x64 完整包；构建机没有音频和图形设备，播放自检未通过，未做设备验收"
-            printf '\n%s\n' "校验：SHA256SUMS.txt"
-            if printf '%s\n' "${{ vars.ANDROID_CERT_SHA256 }}" | grep -q .; then
-              printf '%s\n' "签名证书 SHA-256：${{ vars.ANDROID_CERT_SHA256 }}"
-            else
-              printf '%s\n' "签名证书：未配置（当前为 debug 签名）"
-            fi
-          } > notes.md
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" release/* --clobber
-            gh release edit "$tag" --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
-            # 清理上一次构建留下、本轮已不再产出的附件，避免下载到过期文件。
-            for name in $(gh release view "$tag" --json assets --jq '.assets[].name'); do
-              if [ ! -e "release/$name" ]; then
-                gh release delete-asset "$tag" "$name" --yes
-              fi
-            done
-          else
-            gh release create "$tag" release/* --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
+          gh release create "$TAG" release/* --target "$GITHUB_SHA" --title "红果鉴 / 真果鉴 ${VERSION}" --notes-file notes.md
+      - name: 推送到 Telegram 频道
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "未配置 Telegram，跳过推送。"
+            exit 0
           fi
+          changes="$(cat changes.md)"
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          text="红果鉴 / 真果鉴 ${VERSION} 已发布"
+          if [ -n "$changes" ]; then
+            text="$(printf '%s\n\n更新内容：\n\n%s' "$text" "${changes:0:3500}")"
+          fi
+          text="$(printf '%s\n\n下载：%s' "$text" "$url")"
+          curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${text}" >/dev/null

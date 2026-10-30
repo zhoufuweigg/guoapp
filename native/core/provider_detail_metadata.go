@@ -100,5 +100,10 @@ func huangguoDetailMetadata(body, pageURL, source, sourceID string) Drama {
 	drama.Name, drama.Intro = drama.Title, drama.Desc
 	meta := cleanText(huangguoClassBlock(huangguoNonContent.ReplaceAllString(body, ""), "hg-web-detail__meta"))
 	drama.ReleaseStatus = releaseStatusFromRemark(meta)
+	if drama.ReleaseStatus == "unknown" && source == sourceHuangguoVideo && !strings.HasPrefix(sourceID, "video/") {
+		if header := reVideoDetailMeta.FindStringSubmatch(body); len(header) > 1 {
+			drama.ReleaseStatus = releaseStatusFromRemark(cleanText(header[1]))
+		}
+	}
 	return drama
 }

@@ -1,189 +1,91 @@
 # 红果鉴 / 真果鉴
 
-> ⚠️ **免责声明**：本项目源码来自网上大名鼎鼎的**鱼佬**（原作者）。我只是把它拿来打包、测试着玩，方便自己用，**不保证任何可用性，随时可能删库**。
+Flutter 多端独立短剧 / 影视应用，手机、平板、电脑和电视分别适配。
 
-Flutter 多端独立短剧 / 影视应用，原名「短剧库 APP」。站源请求、解析、下载和播放均在设备上完成，不依赖自建服务。当前源码版本：**0.2.51+57**。
+本项目改编自 [fish2018](https://github.com/fish2018) 的源码。
 
-本轮在 0.2.50 基线上新增两个原生站源：**韩小圈**（`hanxiaoquan`，韩剧 / 韩国电影 / 韩国综艺 / 韩国动漫）与**鬼片网**（`guipian`，鬼片 / 电视剧 / 动漫）。默认可见站源顺序为：**红果 → 韩小圈 → 鬼片 → 青空**。
+Telegram：[交流群组](https://t.me/+c9YKHp7FjSk0MjI1) · [更新频道](https://t.me/+F9NnQSsMfOU3OTdl)
 
-> 说明：应用长期按「只维护源码与定向测试，集中验证另行安排」的方式推进。未完成集中验证与真机验收的项目保持未验收状态；历史版本的检查记录不能作为后续新增功能的验收结论。
-
-| 编译方式 | 应用名称 | 可用站源 |
-| --- | --- | --- |
-| 默认（不加参数） | 红果鉴 | 仅红果 |
-| 加 `--all-sources` | 真果鉴 | 红果、韩小圈、鬼片、青空，以及黄豆、剧果、野果、帝果、黄果视频、黄果 AI、黄果旧版 |
-
-默认可见站源（红果、韩小圈、鬼片、青空）无需密码；其余站源默认隐藏，在站源管理里通过密码锁解锁后显示。已有受限用户不会自动获得新增站源权限，管理员可在用户管理中勾选。
-
-这是**编译选项**，应用内不能切换版本。标题、Android 桌面名称与电视横幅、Windows 窗口与分发文件名、iOS 显示名随编译选项变化。界面、站源调用、原生下载调度同时限制可用站源；红果版不会访问或继续执行其他站源的旧任务。
-
-两版保留原 Android / iOS 应用标识及数据目录；Android 使用同一签名可相互覆盖升级，不能作为两个独立正式应用并排安装。切换版本保留追剧、观看记录、用户权限和下载记录；备份格式保持兼容。
+- **红果鉴**：只含红果站源。
+- **真果鉴**：含全部站源，可在设置里逐个开关。
 
 ## 使用
 
-| 功能 | 操作 |
+| 功能 | 说明 |
 | --- | --- |
-| 浏览 | 标题栏依次提供排序与筛选、榜单、多选下载和展开搜索。分类保持独立一行，内容区左右滑动切类；支持默认、名称、自然季号、上线日期、热度、播放量排序及连载状态筛选。列表下滑接近底部自动加载下一页，底部「加载更多」为兜底 |
-| 搜索 | 红果合并官网与名称索引，输入停顿 300 毫秒显示最多 10 条联想；韩小圈、剧果、野果、鬼片调用各自的在线搜索并按分页继续加载。部分失败保留有效结果；最近 20 次搜索按用户保存 |
-| 推荐 | 仅红果分类栏在「全部」后显示「推荐」，可切换真人剧、漫剧、AI 剧并分别记住位置 |
-| 详情 | 普通点剧直接进入播放；下载和兜底入口保留详情页。详情页浏览封面、资料、追剧状态与可展开简介；底部固定「立即播放 / 继续播放」和下载入口。选集默认折叠，展开后每组 50 集，可切换范围、定位当前或输入集数跳转；宽屏与电视采用资料、选集分栏 |
-| 追剧与历史 | 按想看 / 在看 / 已看 / 有更新筛选；红果已追剧发现新季后进入「有更新」。追剧和历史均可搜索。每个用户独立保存，每 5 秒及退出播放时记录真实进度 |
-| 卡片与批量下载 | 卡片「更多」提供收藏、状态和下载选集；电脑右键，电视菜单键。发现页长按卡片或点标题栏「多选下载」，一次最多 50 部 |
-| VIP | 全站源版浏览黄豆或全部站源时显示 VIP 图标，仅过滤黄豆；默认隐藏已确认的 VIP。未知、免费、VIP 分别保存，未知不会覆盖已知状态 |
-| 手机播放 | 上滑下一集、下滑上一集；长按 350 毫秒临时 3 倍速。竖屏轻点播放 / 暂停，横屏轻点控制条，双击播放 / 暂停。视频下方为「选集 / 简介 / 下载」Tab |
-| 画中画 | Android 手机 / 平板播放器接入画中画按钮；进入前隐藏自绘控制层与弹幕，小窗只保留画面。Android TV、Windows、iOS 暂未接入 |
-| 画质增强 | 仅 Windows 桌面端显示并运行增强链路（关闭 / 自动 / 省电增强 / 清晰优先）；移动端与电视端隐藏 |
-| 弹幕 | 红果在线播放默认开启；播放器侧边圆形「弹」字按钮可关闭、查看状态及失败重试。本地播放不加载弹幕 |
-| 下载 | 播放页「下载」Tab 和详情页下载入口均可选择分集与画质；支持批量暂停、继续、重试、删除及清理任务但保留视频。「更新本剧」补新增或缺失分集 |
-| 更多 | 站源管理、用户管理、设置与备份、界面模式、关于 |
+| 导航 | 发现 / 追剧 / 我的。手机用底栏，平板和电脑用侧栏（可收起），电视用顶部 Tab；宽屏的子页面在侧栏右侧打开 |
+| 界面模式 | 自动识别、电视、手机、平板、窗口（只有电脑提供）；手动选定后不随窗口宽度切换。电视模式强制横屏，手机模式锁定竖屏 |
+| 主题 | 跟随系统取色（Android 12+ 跟随壁纸，Windows 和 macOS 跟随强调色）或 6 个预设色板；浅色 / 深色 / 跟随系统 |
+| 发现 | 站源名旁切换站源；分类 Tab 依次为推荐 / 全部 / 各榜单 / 各题材，榜单封面标出名次。第一个 Tab 顶部大卡片显示最近看过或推荐的剧。滑到底自动加载，下拉或「刷新」重新拉取当前分类 |
+| 搜索 | 只搜当前站源，保留最近搜索；红果有输入联想 |
+| 详情 | 封面模糊作底，显示集数、完结状态、分类、播放量、标签和简介；选集每组 30 集，落在续播那一集，看过的集变浅，VIP 集有标记。打开时后台预缓冲续播集 |
+| 播放 · 电脑 | 左边视频、右边选集栏，可宽屏、全屏；悬停弹出清晰度、倍速、音量；支持空格、Enter、方向键、M 等快捷键 |
+| 播放 · 手机 | 竖屏短剧沉浸式，上下翻页切集，左右滑快进快退，长按画面打开「播放设置」，长按左侧 2 倍速，可锁定。横屏视频竖拿时视频在上、简介 / 选集在下，转横屏自动全屏；全屏双击两侧快退 / 快进，左半屏上下滑调亮度，右半屏调音量 |
+| 播放 · 平板 | 横着拿同电脑，竖着拿同手机，全屏期间锁定横屏 |
+| 播放 · 电视 | 播控浮在画面上，隐藏时左右键快退 / 快进 10 秒；返回键依次关闭选项、收起播控、退出；换集回详情页选 |
+| 播放通用 | 下一集提前缓冲，翻页和连播直接接上；倍速、清晰度和弹幕开关会记住。红果在线播放有弹幕，本地播放不加载 |
+| 追剧 | 只分追 / 不追。有新集的剧排在「有更新」并标出更新集数；可搜索、按站源筛选、多选取消。后台每 30 分钟检查一批未完结的追剧 |
+| 观看记录 | 按今天 / 昨天 / 更早分段；可搜索、按站源筛选、多选删除，「清空」只清当前列出的记录 |
+| 我的 | 用户卡、最近观看、下载概况和设置入口；底栏 / 侧栏图标显示正在下载的集数 |
+| 下载 | 详情页「下载选集」或播放页选集栏多选（点选、拖选、全选）。下载页分「下载中」「已下载」，可单集或全部暂停 / 继续 / 重试；已下载按剧显示，可播放、删除、补齐缺集。电视端不提供下载 |
+| 设置 | 外观、播放、下载、站源、代理、用户、关于、诊断 8 组，改动立即保存；没有权限的项置灰并注明原因 |
+| 用户 | 多用户独立保存追剧、记录和搜索，轻点即切换；管理员可添加、编辑、删除用户，设置能访问的站源和是否允许下载 |
+| 备份 | 导出 / 恢复用户、追剧、观看记录和偏好设置（含主题色），已下载视频不受影响；旧版备份仍可导入。本地配置损坏时启动页可从备份恢复 |
 
-| 站源 | 浏览与播放 | 搜索 |
+每集下载完自动转成普通 mp4（红果先解密，m3u8 合成一个文件），保存为「下载目录 / 剧名 / 第 N 集.mp4」，可以直接拷出使用。旧版下载的分集保持原样，旧版合并出的文件不再列出。
+
+画中画、画质增强、排序与筛选、剧集长按菜单、红果多季切换暂不提供。
+
+## 站源
+
+| 站源 | 内容 | 搜索 |
 | --- | --- | --- |
-| 红果 | 真人剧、漫剧、AI 剧及分集 | 联网搜索与官网搜索联想 |
-| 韩小圈 | MacCMS 模板：最新韩剧 / 韩国电影 / 韩国综艺 / 韩国动漫，多线路分集 | 站源在线搜索 |
-| 鬼片 | MacCMS 站点：鬼片 / 电视剧 / 动漫，多线路分集 | RSS 最新条目标题匹配（站点搜索已停用） |
-| 青空 | 番剧、剧场动画、特摄及分集 | 站源在线搜索 |
-| 黄豆 | 列表、VIP 标记及分集 | 筛选已加载短剧 |
-| 剧果 | 热门、最新、接口分类、详情及可播放分集；签名 Cookie 接入在线播放、预加载和下载 | 站源在线搜索，支持继续加载 |
-| 野果 | 接口实际分类、目录、详情及真实分集；按分集重新取流，保留 H.264 / H.265 地址 | 站源在线分页搜索 |
-| 帝果 | 网页分类、目录、详情及分集；vplayer 签名解析 | 站源在线分页搜索 |
-| 黄果视频 / 黄果 AI / 黄果旧版 | 列表、分类、详情及分集 | 筛选已加载短剧 |
+| 红果 | 短剧、漫剧、AI 剧；推荐、榜单、题材 | 在线搜索，带输入联想 |
+| 韩小圈 | 韩剧、韩国电影、综艺、动漫，多线路 | 在线搜索 |
+| 鬼片 | 鬼片、电视剧、动漫，多线路 | 匹配站点 RSS 最新条目 |
+| 青空 | 番剧、剧场动画、特摄 | 在线搜索 |
+| 黄豆 | 精选短剧、榜单 | 只搜本机缓存 |
+| 剧果 | 分类短剧 | 在线搜索 |
+| 野果 | 分类短剧 | 在线搜索 |
+| 帝果 | 分类视频 | 在线搜索 |
+| 黄果视频 / 黄果 AI / 黄果旧版 | 列表、分类及分集 | 只搜本机缓存 |
 
 站源可用性、清晰度和区域限制取决于源站及网络；应用不解除源站 VIP 或其他授权限制。
 
-### 网络与资源设置
+## 安装
 
-管理员从「设置与备份 → 网络与资源」选择自动、直连或手动代理，手动地址支持 HTTP、HTTPS、SOCKS5 / SOCKS5h。代理地址默认遮蔽、不进入备份；设备内播放服务始终绕过代理。自动模式读取系统静态代理与排除列表，恢复前台及每 30 秒更新；代理不会关闭 TLS 校验。
+在 [Releases](../../releases) 下载对应平台的包，文件名以 `hongguojian-` 开头的是红果鉴，`zhenguojian-` 开头的是真果鉴。
 
-目录请求并发可设 1–6、间隔 0–5000 毫秒（默认 3 / 250ms）；下载并发默认 2、可设 1–6。仍保留前台优先、后台让行、取消、退避及请求数量边界。
+| 平台 | 安装包                                                                                    |
+| --- |----------------------------------------------------------------------------------------|
+| Android 7.0+ | arm64-v8a / armeabi-v7a / x86_64 三种 APK，按设备架构选择（大多数手机选 arm64-v8a）；同一签名可覆盖升级，旧证书版本需卸载重装 |
+| Windows 10/11 x64 | 完整 ZIP，解压后运行 `hongguojian.exe` / `zhenguojian.exe`，保留所有 DLL 与 `data` 目录                |
+| iOS 15.1+ | 未签名 IPA，需自行签名或用 iloader 等工具侧载                                                          |
+| macOS 12+ | 通用 dmg（Apple 芯片与 Intel），打开后拖入「应用程序」；未经公证，首次打开前执行 `xattr -dr com.apple.quarantine /Applications/红果鉴.app`（真果鉴为 `真果鉴.app`） |
 
-### 局域网互联：追剧同步与推送播放（已接入，待验证）
+安装提示 `INSTALL_FAILED_NO_MATCHING_ABIS` 表示 APK 与设备架构不匹配，请换对应架构的安装包。
 
-两台设备在同一局域网直连，自动同步追剧记录或接续播放，不依赖账号服务器。服务类型 `_zgj-link._tcp`（DNS-SD / mDNS），按设备 ID 合并多网卡地址，首次配对记录证书指纹，后续连接固定校验。
+## 检查更新与使用统计
 
-入口：「追剧 → 标题栏同步」或「设置与备份 → 设备互联」。手动同步默认「双向合并」，可选覆盖对方 / 覆盖本机，先「查看预览」再执行；自动同步仅发送改动条目与删除标记，播放期间约每 10 秒发送进度。冲突记录保留候选，用户从同步页逐项处理。
+应用启动时会检查一次新版本，有新版时每次启动都会提示，可在提示里选择忽略此版本或不再提醒。检查更新只读取最新版本号，不发送任何数据。
 
-## 安装包与平台状态
+匿名使用统计是单独的请求，只发送：首次统计时生成的随机编号（与设备、账号无关）、应用版本号、平台（Android / iOS / Windows / macOS）、红果鉴或真果鉴。不发送观看记录、追剧、搜索、站源设置或其他任何个人数据。接收端代码见 [`worker/`](worker)。
 
-| 平台 | 包与状态 |
-| --- | --- |
-| Android 8.0+ | 三架构（arm64-v8a / armeabi-v7a / x86_64）APK；同一签名可覆盖升级 |
-| Windows 10/11 x64 | 完整 ZIP 解压后运行 `hongguojian.exe` / `zhenguojian.exe`，保留所有 DLL 与 `data`；局域网原生发现依赖 Windows 10 1903+ |
-| Android TV | 与手机共用源码，自动识别电视模式并保持横屏；待电视 / 盒子实机验收 |
-| iOS 15.1+ | 已加入工程、Go 核心链接、媒体依赖、文件管理与构建脚本；iOS 播放页禁用 media_kit_video 硬件纹理加速以规避 libmpv 渲染崩溃；待 Xcode 构建与真机验收，无已签名 IPA |
+两项都可以在 **设置 › 关于** 分别关闭，关闭后应用不会再发出对应的请求。
 
-`INSTALL_FAILED_NO_MATCHING_ABIS` 表示 APK 与设备架构不匹配，请更换对应架构安装包。
+## 免责声明
 
-### GitHub Actions
+- 本项目仅供个人学习与技术研究。
+- 本项目与红果短剧及其他各站源的运营方无任何关联，未获得其授权或认可；文中提到的名称和商标归各自权利人所有。
+- 应用本身不存储、不上传、不分发任何影视内容，所有内容均来自第三方站点，版权归原权利人所有；应用不解除源站 VIP 或其他授权限制。
+- 使用者应遵守所在地法律法规及各站点的服务条款，因使用本项目产生的一切后果由使用者自行承担。
+- 本项目按「现状」提供，不对可用性、稳定性或适用性作任何保证，作者不承担由此造成的任何直接或间接损失。
+- 如认为本项目侵犯了你的合法权益，请通过 Issue 联系，核实后会及时处理。
 
-推送 `main` / `master`、`v*` 标签、提交 PR，或手动运行 **Build app packages**，会先检查再构建两版（默认与 `--all-sources`）：
+## 许可
 
-| 产物 | 内容 |
-| --- | --- |
-| `*-android` | 三种架构 APK 和 SHA256 |
-| `*-windows` | 完整 ZIP 和 SHA256 |
-| `*-ios-unsigned` | 未签名 `.app` ZIP 和 SHA256，不能直接当已签名 IPA 安装 |
+本项目以 [GNU GPL v3.0](https://www.gnu.org/licenses/gpl-3.0.html) 发布，全文见 [LICENSE](LICENSE)。第三方依赖遵循各自的许可证。
 
-推送 `main` 且 android / ios / windows 全部构建成功时，自动创建 / 更新 GitHub Release（tag `app-v{version}`）。发布新版本前需先在 `pubspec.yaml` 提升 `version`，否则会覆盖同名 tag 的 Release。
+## 开发
 
-Android 正式发布使用同一签名并递增构建号，在仓库 Secrets 配置：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。未配置时生成 debug 签名预览包。
-
-本地不入库的 `android/key.properties`：
-
-~~~properties
-storeFile=/absolute/path/zhenguojian-release.jks
-storePassword=你的密码
-keyAlias=zhenguojian
-keyPassword=你的密码
-~~~
-
-## 开发与构建
-
-Flutter `3.47.4`、Dart `3.12+`、Go `1.24.1+`、Python `3.10+`。Android 需要 JDK 17、SDK 36、NDK `28.2.13676358`；Windows 需要 Visual Studio C++ 桌面组件及 MinGW-w64 x64；iOS 需要 macOS、完整 Xcode 和 CocoaPods。
-
-构建脚本对子进程默认设置 `GOPROXY=https://goproxy.cn,direct`、`GOSUMDB=off`，同名环境变量可覆盖。
-
-~~~sh
-python3 scripts/build_android.py                 # 红果鉴
-python3 scripts/build_android.py --all-sources   # 真果鉴
-python3 scripts/build_android.py --abi arm64-v8a
-python3 scripts/build_android.py --cn-mirrors    # 国内镜像
-~~~
-
-~~~powershell
-.\scripts\build_windows.ps1
-.\scripts\build_windows.ps1 -AllSources
-.\scripts\build_windows.ps1 -ChinaMirrors
-~~~
-
-~~~sh
-python3 scripts/build_ios.py
-python3 scripts/build_ios.py --all-sources
-python3 scripts/build_ios.py --core-only [--simulator]
-python3 scripts/build_ios.py --export-options /path/to/ExportOptions.plist
-~~~
-
-产物在 `dist/android`、`dist/windows`、`dist/ios`，红果版以 `hongguojian-` 开头，全站源版以 `zhenguojian-` 开头。
-
-首次 Android 调试先编译对应架构核心，再运行：
-
-~~~sh
-python3 scripts/build_native.py --platform android --abi arm64-v8a
-flutter pub get --enforce-lockfile
-flutter run
-~~~
-
-调试全站源版：先给 `build_native.py` 加 `--all-sources`，再 `flutter run --dart-define=ALL_SOURCES=true`；iOS 对应 `build_ios.py --core-only --all-sources`。脚本会同步设置 Dart 常量和 Go 编译参数，应用启动时校验二者一致，避免混装原生库。
-
-播放器使用 [media_kit](https://github.com/media-kit/media-kit) / libmpv，合并和导出使用 [FFmpegKit min-gpl](https://github.com/sk3llo/ffmpeg_kit_flutter)（含 GPL 媒体组件）。FFmpegKit 不参与正常播放或下载的转码。
-
-### 集中检查与真机回归
-
-~~~sh
-python3 -m unittest discover -s scripts -p 'test_*.py'
-dart format --output=none --set-exit-if-changed lib test integration_test test_driver
-dart analyze --fatal-infos lib test integration_test test_driver
-flutter test --dart-define=DISABLE_REMOTE_IMAGES=true
-flutter test --dart-define=DISABLE_REMOTE_IMAGES=true --dart-define=ALL_SOURCES=true
-cd native
-go test -race ./...
-go test -race -ldflags="-X duanjuapp/native/core.buildAllSources=true" ./...
-~~~
-
-Android 设备回归（连接并授权 USB 调试、保持解锁）：
-
-~~~sh
-python3 scripts/create_test_media.py
-python3 scripts/serve_test_media.py
-adb reverse tcp:38473 tcp:38473
-flutter drive --driver=test_driver/playback.dart --target=integration_test/playback_test.dart \
-  --dart-define=DISABLE_REMOTE_IMAGES=true --dart-define=FIXTURE_BASE_URL=http://127.0.0.1:38473
-~~~
-
-结果在 `build/device-test/results/`；结束后停服务并 `adb reverse --remove tcp:38473`。
-
-### 源码同步
-
-~~~sh
-python3 scripts/finish_task.py --message "本次实际完成的变更"
-python3 scripts/sync_source.py --check
-~~~
-
-脚本只同步纯源码到同级 `../guoapp`，并生成 `真果·鉴-YYYYMMDDHHMM.zip` 源码压缩包；不执行 Git 提交、分支或推送。
-
-## 目录结构
-
-| 目录 | 内容 |
-| --- | --- |
-| `lib` | 页面、播放器、本地用户、FFI、下载和媒体处理 |
-| `native/core`、`native/bridge` | 独立站源核心、缓存、下载、目录迁移及 C ABI |
-| `android`、`windows`、`ios` | 平台工程与必要资源 |
-| `assets/video_enhancement`、`packages/media_kit_libs_windows_video` | 增强 Shader 与许可、固定 Windows 媒体依赖插件 |
-| `scripts`、`.github/workflows` | 构建、签名、验证、同步和版本快照 |
-| `test`、`integration_test` | 自动化与设备回归 |
-
-## 站源开发约定
-
-站源是 Go 原生 provider（`native/core/provider_*.go`），不是运行期加载的 Python 源。新增站源需接入：`provider_huangguo.go`（常量 / 白名单 / `canonicalProviderSource` / `GetHuangguoChapters`）、`provider_media.go`（baseURL / host 反查 / 播放分派）、`app_categories.go`、`app_cover_metadata.go`、`app_runtime.go`（Config 字段 + 目录 / 搜索 / 详情分派 + 空页放行），并在 `lib/models.dart` 登记 `SourceSite`。
-
-注意：Go RE2 正则**不支持 lookahead**。解析多线路播放列表时不能用 `(?=...)` 做分段，否则非捕获组会消耗下一段开头；应改用显式字符串截断（从容器标记之后查找下一段标记）。
+构建、测试、架构和发布流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。

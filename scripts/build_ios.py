@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import os
 import platform
 import re
@@ -7,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 from app_build import BuildVariant, add_variant_argument
@@ -16,6 +16,29 @@ root = Path(__file__).resolve().parents[1]
 
 def run(arguments, **kwargs):
     subprocess.run(arguments, cwd=kwargs.pop('cwd', root), check=True, **kwargs)
+
+
+def validate_unsigned_application(application):
+    executable = application / 'Runner'
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise SystemExit('iOS 包缺少可执行的 Runner。')
+    run(['xcrun', 'lipo', str(executable), '-verify_arch', 'arm64'])
+    if (application / 'embedded.mobileprovision').exists():
+        raise SystemExit('未签名 iOS 包不应包含 provisioning profile。')
+    signature = subprocess.run(['codesign', '-d', str(application)],
+                               capture_output=True, text=True)
+    if signature.returncode == 0 or 'not signed at all' not in signature.stderr:
+        raise SystemExit('Runner.app 未通过无签名检查：' + signature.stderr)
+
+
+def validate_package(package, prefix):
+    with zipfile.ZipFile(package) as archive:
+        for name in [prefix + '/Runner', prefix + '/Info.plist']:
+            if name not in archive.namelist() or archive.getinfo(name).file_size == 0:
+                raise SystemExit('iOS 压缩包缺少必要文件：' + name)
+        corrupt = archive.testzip()
+        if corrupt:
+            raise SystemExit('iOS 压缩包损坏：' + corrupt)
 
 
 def build_core(simulator=False, variant=BuildVariant()):
@@ -99,15 +122,11 @@ def main():
     else:
         run([flutter, 'build', 'ios', '--release', '--no-codesign', '--no-pub', *variant.flutter_arguments])
         application = root / 'build' / 'ios' / 'iphoneos' / 'Runner.app'
+        validate_unsigned_application(application)
         symbols = subprocess.check_output(['xcrun', 'nm', '-gU', str(application / 'Runner')], text=True)
         for symbol in ['_DuanjuRequest', '_DuanjuFree']:
             if symbol not in symbols:
                 raise SystemExit('iOS 包缺少 FFI 入口：' + symbol)
-        destination = output / f'{variant.slug}-{version}-ios-unsigned-app.zip'
-        run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(application), str(destination)])
-        artifacts.append(destination)
-        # 额外打包未签名 IPA：IPA 结构为 zip 内 Payload/Runner.app。
-        # 便于用户用 AltStore / Sideloadly / TrollStore 自签后直接安装。
         payload = output / 'Payload'
         if payload.exists():
             shutil.rmtree(payload)
@@ -116,20 +135,14 @@ def main():
         ipa = output / f'{variant.slug}-{version}-ios-unsigned.ipa'
         if ipa.exists():
             ipa.unlink()
-        run(['ditto', '-c', '-k', '--sequesterRsrc', str(payload), str(ipa)])
+        run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(payload), str(ipa)])
+        validate_package(ipa, 'Payload/Runner.app')
         shutil.rmtree(payload)
         artifacts.append(ipa)
     if not artifacts:
         raise SystemExit('未生成 iOS 安装包。')
-    checksums = []
-    for artifact in sorted(output.glob(f'*-{version}-ios*')):
-        digest = hashlib.sha256()
-        with artifact.open('rb') as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-                digest.update(chunk)
-        checksums.append(f'{digest.hexdigest()}  {artifact.name}')
+    for artifact in artifacts:
         print(artifact)
-    (output / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='ascii')
 
 
 if __name__ == '__main__':

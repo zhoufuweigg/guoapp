@@ -45,7 +45,7 @@ func nativeHongguoResponse(request *http.Request, next int, more bool, session s
 
 func reopenCatalogEngine(t *testing.T, directory string, transport sourceFixtureTransport) *nativeEngine {
 	t.Helper()
-	engine, err := newNativeEngine(directory)
+	engine, err := newNativeEngine(directory, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,14 @@ func reopenCatalogEngine(t *testing.T, directory string, transport sourceFixture
 	engine.downloader.client.Transport = transport
 	engine.downloader.limiter = newRequestLimiter(3, 0)
 	engine.downloader.cfg.Retries = 1
+	engine.downloader.cfg.MaxPagesPerSort = 1
+	return engine
+}
+
+func catalogFixtureEngine(t *testing.T, transport sourceFixtureTransport) *nativeEngine {
+	t.Helper()
+	engine := sourceFixtureEngine(t, transport)
+	engine.downloader.cfg.MaxPagesPerSort = 1
 	return engine
 }
 
@@ -75,7 +83,7 @@ func TestNativeHongguoCursorRestartsPerCatalog(t *testing.T) {
 		return nativeHongguoResponse(request, payload.Offset+18, true, "fixture-"+payload.Scene,
 			strconv.Itoa(base+position+1), strconv.Itoa(base+position+2)), nil
 	})
-	engine := sourceFixtureEngine(t, transport)
+	engine := catalogFixtureEngine(t, transport)
 	for _, input := range []nativeInput{
 		{Source: sourceHongguo, Page: 1},
 		{Source: sourceHongguo, Category: "short_play", Page: 1},
@@ -153,7 +161,7 @@ func TestNativeHongguoCursorRecoversSessionsAfterRestart(t *testing.T) {
 				}
 				return nativeHongguoResponse(request, 36, true, "new-session", "700002", "700003"), nil
 			})
-			engine := sourceFixtureEngine(t, transport)
+			engine := catalogFixtureEngine(t, transport)
 			input := nativeInput{Source: sourceHongguo, Category: "ai_series", Page: 1}
 			if result, err := engine.nativeCatalog(context.Background(), input); err != nil || result.Warning != "" {
 				t.Fatal(err, result.Warning)
@@ -200,7 +208,7 @@ func TestNativeHongguoStalledCursorKeepsPartialItems(t *testing.T) {
 		}
 		return nativeHongguoResponse(request, 18, true, "fixture", "700002"), nil
 	})
-	engine := sourceFixtureEngine(t, transport)
+	engine := catalogFixtureEngine(t, transport)
 	input := nativeInput{Source: sourceHongguo, Category: "ai_series", Page: 1}
 	if _, err := engine.nativeCatalog(context.Background(), input); err != nil {
 		t.Fatal(err)
@@ -249,8 +257,31 @@ func TestNativeCatalogPreservesLargeLibraryAndPage501(t *testing.T) {
 	}
 	restarted := reopenCatalogEngine(t, engine.directory, nil)
 	cached := restarted.nativeCached(key)
-	if len(cached.Items) != 6001 || cached.Page != 501 || cached.HasMore || len(restarted.catalogs[sourceHuangguoAI]) != 6002 {
-		t.Fatal("restart truncated data, advanced past lost IDs or duplicated category entries", len(cached.Items), cached.Page)
+	if len(cached.Items) != nativeCatalogMaxItems || cached.Items[0].ID != "huangguoai:1" || cached.Page != 501 || cached.HasMore || len(restarted.catalogs[sourceHuangguoAI]) != nativeCatalogMaxItems {
+		t.Fatal("restart did not keep the leading items within the limit or lost the page cursor", len(cached.Items), cached.Page)
+	}
+}
+
+func TestNativeCatalogLoadTrimsOversizedLegacyLists(t *testing.T) {
+	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
+		return nil, errors.New("network forbidden")
+	})
+	items := make([]nativeDrama, nativeCatalogMaxItems+500)
+	for index := range items {
+		items[index] = nativeDrama{ID: fmt.Sprintf("hongguo:%d", index+1), Source: sourceHongguo, Title: "合成目录"}
+	}
+	body, err := json.Marshal(nativeCatalogDisk{Version: 3, Catalogs: map[string][]nativeDrama{sourceHongguo: items},
+		States: map[string]nativeCatalogState{sourceHongguo: {Page: 400, HasMore: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(engine.directory, "catalogs.json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restarted := reopenCatalogEngine(t, engine.directory, nil)
+	cached := restarted.nativeCached(sourceHongguo)
+	if len(cached.Items) != nativeCatalogMaxItems || cached.Items[nativeCatalogMaxItems-1].ID != fmt.Sprintf("hongguo:%d", nativeCatalogMaxItems) || cached.Page != 400 || !cached.HasMore {
+		t.Fatal("legacy list was not trimmed to its leading items", len(cached.Items), cached.Page)
 	}
 }
 
@@ -263,7 +294,7 @@ func TestNativeCatalogSaveFailureRetriesWithoutAdvancing(t *testing.T) {
 		return nativeHongguoResponse(request, payload.Offset+18, true, "fixture",
 			strconv.Itoa(1001+position), strconv.Itoa(1002+position)), nil
 	})
-	engine := sourceFixtureEngine(t, transport)
+	engine := catalogFixtureEngine(t, transport)
 	input := nativeInput{Source: sourceHongguo, Category: "short_play", Page: 1}
 	if _, err := engine.nativeCatalog(context.Background(), input); err != nil {
 		t.Fatal(err)
@@ -302,12 +333,8 @@ func TestNativeCatalogSaveFailureRetriesWithoutAdvancing(t *testing.T) {
 	if cursor := restarted.downloader.hongguoCatalogSnapshot().Feeds["category:short_play"]; cursor.Offset != 18 || len(restarted.catalogs["hongguo|short_play"]) != 2 {
 		t.Fatal("restart resumed an offset whose data had not been saved")
 	}
-	if status := restarted.sourceStatus(sourceHongguo); status.Stage != "上次保存未完成" || restarted.nativeCached("hongguo|short_play").Fresh {
-		t.Fatal("restart hid the interrupted save", status)
-	}
-	status, err := engine.startSourceTask(sourceHongguo, "retrySave", nativeDrama{})
-	if err != nil || status.StorageError != "" || len(offsets) != 2 {
-		t.Fatal("save retry failed or issued network requests", err, status)
+	if retried, err := engine.retryCatalogSave(); !retried || err != nil || len(offsets) != 2 {
+		t.Fatal("save retry failed or issued network requests", retried, err)
 	}
 	restarted = reopenCatalogEngine(t, engine.directory, transport)
 	if len(restarted.catalogs["hongguo|short_play"]) != 3 || restarted.downloader.hongguoCatalogSnapshot().Feeds["category:short_play"].Offset != 36 {
@@ -362,7 +389,7 @@ func TestNativeCatalogMetadataSaveExcludesInFlightCursor(t *testing.T) {
 		base := map[string]int{"default": 1000, "comic_series": 2000, "ai_series": 3000}[payload.Scene]
 		return nativeHongguoResponse(request, payload.Offset+18, true, "fixture", strconv.Itoa(base+payload.Offset)), nil
 	})
-	engine := sourceFixtureEngine(t, transport)
+	engine := catalogFixtureEngine(t, transport)
 	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHongguo, Page: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -399,56 +426,35 @@ func TestNativeCatalogMetadataSaveExcludesInFlightCursor(t *testing.T) {
 	}
 }
 
-func TestNativeSourceRecordSaveFailureAndRetryDuringBackoff(t *testing.T) {
-	var requests atomic.Int32
-	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
-		requests.Add(1)
-		return nil, errors.New("network forbidden")
+func TestNativeHongguoInteractiveFirstLoadStopsEarly(t *testing.T) {
+	var calls int
+	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+		payload := nativeHongguoRequestForTest(t, request)
+		calls++
+		base := map[string]int{"default": 1000, "comic_series": 2000, "ai_series": 3000}[payload.Scene]
+		position := payload.Offset / 18
+		return nativeHongguoResponse(request, payload.Offset+18, true, "fixture-"+payload.Scene,
+			strconv.Itoa(base+position*2+1), strconv.Itoa(base+position*2+2)), nil
 	})
-	engine.changeSourceRecord(sourceHongguo, func(record *nativeSourceRecord) {
-		record.Stage = "已完成"
-		record.Health = &nativeSourceHealth{State: "ok", Sample: "原诊断"}
-	})
-	path := filepath.Join(engine.directory, "sources.json")
-	if err := os.Rename(path, path+".saved"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	engine.changeSourceRecord(sourceHongguo, func(record *nativeSourceRecord) {
-		record.RetryAt = time.Now().Add(time.Minute)
-		record.Health = &nativeSourceHealth{State: "catalogOnly", Sample: "新诊断"}
-	})
-	status, err := engine.startSourceTask(sourceHongguo, "retrySave", nativeDrama{})
-	if err != nil || status.StorageError == "" || status.Stage != "等待保存" || status.Health.Sample != "新诊断" || requests.Load() != 0 {
-		t.Fatal("failed task persistence was hidden or blocked by network cooldown", err, status)
-	}
-	if err := os.Rename(path, path+".blocked"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(path+".saved", path); err != nil {
-		t.Fatal(err)
-	}
-	status, err = engine.startSourceTask(sourceHongguo, "retrySave", nativeDrama{})
-	if err != nil || status.StorageError != "" || status.Stage != "已完成" || requests.Load() != 0 {
-		t.Fatal("task record retry did not recover", err, status)
-	}
-	restarted := reopenCatalogEngine(t, engine.directory, nil)
-	if restarted.sourceStatus(sourceHongguo).Health.Sample != "新诊断" {
-		t.Fatal("retry did not save the new health report")
-	}
-	engine.mu.Lock()
-	record := engine.sourceRecords[sourceHongguo]
-	record.Stage = strings.Repeat("x", nativeSourceMaxBytes)
-	engine.sourceRecords[sourceHongguo] = record
-	err = engine.saveSourceRecordsLocked()
-	engine.mu.Unlock()
-	if !errors.Is(err, errNativeSourceLimit) || engine.sourceStatus(sourceHongguo).StorageError == "" {
-		t.Fatal("oversized task records were silently dropped", err)
-	}
-	restarted = reopenCatalogEngine(t, engine.directory, nil)
-	if restarted.sourceStatus(sourceHongguo).Health.Sample != "新诊断" {
-		t.Fatal("oversized records replaced the previous saved report")
+	engine := sourceFixtureEngine(t, transport)
+	engine.downloader.cfg.MaxPagesPerSort = 5
+	for _, check := range []struct {
+		ctx   context.Context
+		input nativeInput
+		calls int
+	}{
+		{context.Background(), nativeInput{Source: sourceHongguo, Page: 1}, 3},
+		{context.Background(), nativeInput{Source: sourceHongguo, Category: "short_play", Page: 1}, 3},
+		{context.Background(), nativeInput{Source: sourceHongguo, Category: "short_play", Page: 2}, 3},
+		{context.WithValue(context.Background(), backgroundCatalogKey{}, true), nativeInput{Source: sourceHongguo, Category: "ai_series", Page: 1}, 5},
+	} {
+		calls = 0
+		result, err := engine.nativeCatalog(check.ctx, check.input)
+		if err != nil || result.Warning != "" || !result.HasMore {
+			t.Fatal("catalog page failed", check.input, err, result.Warning)
+		}
+		if calls != check.calls {
+			t.Fatal("unexpected page requests", check.input, calls)
+		}
 	}
 }

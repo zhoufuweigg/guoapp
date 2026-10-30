@@ -239,7 +239,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin\npython3 \"$SRCROOT/../scripts/configure_ios_branding.py\"";
+			shellScript = "set -e\n/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin\nname=红果鉴 latin=HongGuoJian slug=hongguojian\nfor define in $(echo \"$DART_DEFINES\" | tr ',' ' '); do\n  case \"$define\" in\n    QUxMX1NPVVJDRVM9dHJ1ZQ==) name=真果鉴 latin=ZhenGuoJian slug=zhenguojian ;;\n    QUxMX1NPVVJDRVM9ZmFsc2U=) name=红果鉴 latin=HongGuoJian slug=hongguojian ;;\n  esac\ndone\nplist=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleDisplayName $latin\" -c \"Set :CFBundleName $slug\" \"$plist\"\nstrings=\"$(dirname \"$plist\")/zh-Hans.lproj/InfoPlist.strings\"\nmkdir -p \"$(dirname \"$strings\")\"\nrm -f \"$strings\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleDisplayName string $name\" \"$strings\"\nplutil -convert binary1 \"$strings\"\n";
 		};
 		9740EEB61CF901F6004384FC /* Run Script */ = {
 			isa = PBXShellScriptBuildPhase;

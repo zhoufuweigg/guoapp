@@ -47,7 +47,7 @@ func TestNativePlaybackCancellationRejectsDelayedCalls(t *testing.T) {
 }
 
 func TestNativeStreamLateResolutionPreservesCurrentSession(t *testing.T) {
-	engine, err := newNativeEngine(t.TempDir())
+	engine, err := newNativeEngine(t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestNativeHLSExtensionlessPlaylistsAndRedirectBase(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
-	engine, err := newNativeEngine(t.TempDir())
+	engine, err := newNativeEngine(t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

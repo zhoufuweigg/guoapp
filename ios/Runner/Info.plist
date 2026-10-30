@@ -35,12 +35,6 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>用于发现局域网设备、同步追剧进度和推送播放，以及读取设备内播放服务。</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_zgj-link._tcp</string>
-	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

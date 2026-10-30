@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS pings (
+  day TEXT NOT NULL,
+  id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  build TEXT NOT NULL,
+  PRIMARY KEY (day, id)
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

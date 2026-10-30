@@ -18,7 +18,15 @@ val releaseKey = rootProject.file("key.properties")
 val releaseProperties = Properties()
 if (releaseKey.exists()) {
     releaseKey.inputStream().use { releaseProperties.load(it) }
+} else {
+    mapOf(
+        "storeFile" to "ANDROID_KEYSTORE_PATH",
+        "storePassword" to "ANDROID_KEYSTORE_PASSWORD",
+        "keyAlias" to "ANDROID_KEY_ALIAS",
+        "keyPassword" to "ANDROID_KEY_PASSWORD",
+    ).forEach { (key, name) -> System.getenv(name)?.let { releaseProperties[key] = it } }
 }
+val hasReleaseKey = releaseProperties.getProperty("storeFile") != null
 
 android {
     namespace = "com.duanju.duanju_app"
@@ -32,7 +40,7 @@ android {
 
     defaultConfig {
         applicationId = "com.duanju.duanju_app"
-        minSdk = 26
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -41,7 +49,7 @@ android {
     }
 
     signingConfigs {
-        if (releaseKey.exists()) {
+        if (hasReleaseKey) {
             create("release") {
                 val rawStore = requireNotNull(releaseProperties.getProperty("storeFile"))
                 storeFile = if (file(rawStore).exists()) file(rawStore) else rootProject.file(rawStore)
@@ -54,10 +62,13 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")
         }
         release {
-            signingConfig = signingConfigs.getByName(if (releaseKey.exists()) "release" else "debug")
+            signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")
+        }
+        getByName("profile") {
+            signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")
         }
     }
 

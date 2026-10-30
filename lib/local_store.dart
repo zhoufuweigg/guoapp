@@ -11,12 +11,9 @@ import 'download_preferences.dart';
 import 'catalog_sort.dart';
 import 'follow_state.dart';
 import 'hongguo_series.dart';
-import 'lan_sync_models.dart';
-
-part 'local_store_sync.dart';
+import 'theme_color.dart';
 
 class LocalStore extends ChangeNotifier {
-  /// [pinHasher] 可注入，便于测试替换掉默认的 isolate 哈希实现。
   LocalStore(
     this.preferences, {
     Future<String> Function(String, String)? pinHasher,
@@ -27,11 +24,6 @@ class LocalStore extends ChangeNotifier {
   final SharedPreferences preferences;
   final Future<String> Function(String pin, String salt) _pinHasher;
   LocalSnapshot? _snapshot;
-  LanDocument? _lanDocumentCache;
-  int _lanRevision = 0;
-  int _lanUrgentRevision = 0;
-  int get lanRevision => _lanRevision;
-  int get lanUrgentRevision => _lanUrgentRevision;
   final Map<String, WatchEntry> _history = {};
   final Map<String, Drama> _favorites = {};
   final Map<String, FollowState> _followStates = {};
@@ -44,11 +36,7 @@ class LocalStore extends ChangeNotifier {
   String? _configurationError;
   int _epoch = 0;
   int _failures = 0;
-  bool _sourcesUnlocked = false;
-  bool _gateEnabled = false;
-  bool _gateOff = false;
-  String _gateSalt = '';
-  String _gateHash = '';
+  Map<String, bool> _sourceSwitches = {};
   DateTime _retryAfter = DateTime(2000);
 
   void _initialize() {
@@ -71,8 +59,10 @@ class LocalStore extends ChangeNotifier {
       }
       _configurationError = null;
       _locked = forceLogin && profile.protected;
-      _loadSourceGate();
+      _loadSourceSwitches();
       _loadLibrary();
+      _loadSeriesCandidates();
+      _queue(() => _moveSeriesCandidates().catchError((Object _) {}));
     } catch (_) {
       _block('本地用户配置损坏，已锁定访问。原始记录已保留，请重新读取或从备份恢复。');
     }
@@ -99,7 +89,6 @@ class LocalStore extends ChangeNotifier {
   void _block(String message) {
     _configurationError = message;
     _locked = true;
-    _sourcesUnlocked = false;
     _profiles = [
       const LocalProfile(id: 'default', name: '配置待恢复', download: false),
     ];
@@ -136,123 +125,47 @@ class LocalStore extends ChangeNotifier {
       !locked &&
       SourceSite.isAvailable(source) &&
       profile.allows(source) &&
-      (_gateOff || _sourcesUnlocked || SourceSite.isPrimary(source));
-  List<SourceSite> get sources => SourceSite.visibleValues(
-    unlocked: _gateOff || _sourcesUnlocked,
-  ).where((site) => allowsSource(site.id)).toList();
+      sourceEnabled(source);
+  List<SourceSite> get sources =>
+      SourceSite.values.where((site) => allowsSource(site.id)).toList();
+  List<SourceSite> get permittedSources => [
+    for (final site in SourceSite.values)
+      if (!locked && profile.allows(site.id)) site,
+  ];
 
-  /// 默认隐藏的站源是否已解锁。解锁状态只在本次运行内有效，重启后恢复隐藏。
-  bool get sourcesUnlocked => _gateOff || _sourcesUnlocked;
+  bool sourceEnabled(String source) =>
+      _sourceSwitches[source] ?? !SourceSite.isRestricted(source);
 
-  /// 是否已启用站源密码锁。
-  bool get sourceGateEnabled => _gateEnabled;
-
-  bool get sourceGateConfigured => _gateSalt.isNotEmpty && _gateHash.isNotEmpty;
-
-  /// 当前是否处于「不使用密码、显示全部站源」状态。
-  bool get sourceGateOff => _gateOff;
-
-  void _loadSourceGate() {
-    final enabled = _bool('sourceGateEnabled') ?? false;
-    final off = _bool('sourceGateOff') ?? false;
-    final salt = _string('sourceGateSalt') ?? '';
-    final hash = _string('sourceGateHash') ?? '';
-    final valid =
-        enabled &&
-        RegExp(r'^[a-f0-9]{32}$').hasMatch(salt) &&
-        RegExp(r'^[a-f0-9]{64}$').hasMatch(hash);
-    _gateEnabled = valid;
-    _gateOff = !valid && off;
-    _gateSalt = valid ? salt : '';
-    _gateHash = valid ? hash : '';
-    _sourcesUnlocked = false;
+  void _loadSourceSwitches() {
+    try {
+      final raw = _string('sourceSwitches');
+      _sourceSwitches = raw == null
+          ? {}
+          : Map<String, bool>.from(jsonDecode(raw) as Map);
+    } catch (_) {
+      _sourceSwitches = {};
+    }
   }
 
-  Future<void> _checkSourcePin(String pin) async {
-    if (DateTime.now().isBefore(_retryAfter)) {
-      throw StateError('密码输入过于频繁，请稍后再试');
+  Future<void> setSourceEnabled(String source, bool enabled) {
+    if (!SourceSite.isAvailable(source)) {
+      return Future.error(StateError('站源无效'));
     }
-    final actual = await _pinHasher(pin, _gateSalt);
-    var difference = actual.length ^ _gateHash.length;
-    for (var i = 0; i < actual.length && i < _gateHash.length; i++) {
-      difference |= actual.codeUnitAt(i) ^ _gateHash.codeUnitAt(i);
-    }
-    if (difference != 0) {
-      _failures++;
-      if (_failures >= 3) {
-        _retryAfter = DateTime.now().add(
-          Duration(seconds: (_failures * 2).clamp(0, 30)),
-        );
-      }
-      throw StateError('密码不正确');
-    }
-    _failures = 0;
-  }
-
-  /// 校验密码并解锁默认隐藏的站源（仅本次运行有效）。
-  Future<void> unlockSources(String pin) => _queue(() async {
-    if (_configurationError != null) throw StateError('本地用户配置损坏，请先恢复');
-    if (!_gateEnabled) throw StateError('尚未启用站源密码锁');
-    await _checkSourcePin(pin);
-    if (!_sourcesUnlocked) {
-      _sourcesUnlocked = true;
+    final epoch = _epoch;
+    return _queue(() async {
+      _requireAdmin();
+      if (epoch != _epoch) throw StateError('当前用户已变更，请重试');
+      final switches = {..._sourceSwitches, source: enabled};
+      await _commit({'sourceSwitches': jsonEncode(switches)});
+      _sourceSwitches = switches;
       _notify();
-    }
-  });
-
-  /// 重新隐藏默认隐藏的站源，无需重启。
-  void lockSources() {
-    if (!_gateEnabled || !_sourcesUnlocked) return;
-    _sourcesUnlocked = false;
-    _notify();
+    });
   }
-
-  /// 设置或更换密码锁，并立即解锁。
-  Future<void> enableSourceGate(String pin) => _queue(() async {
-    _requireAdmin();
-    final value = pin.trim();
-    if (!RegExp(r'^\d{3,12}$').hasMatch(value)) {
-      throw StateError('密码需要 3 至 12 位数字');
-    }
-    final salt = randomProfileToken();
-    final hash = await _pinHasher(value, salt);
-    await _commit({
-      'sourceGateEnabled': true,
-      'sourceGateOff': false,
-      'sourceGateSalt': salt,
-      'sourceGateHash': hash,
-    });
-    _gateEnabled = true;
-    _gateOff = false;
-    _gateSalt = salt;
-    _gateHash = hash;
-    _sourcesUnlocked = true;
-    _notify();
-  });
-
-  /// 关闭密码功能，恢复全部站源可见。
-  Future<void> disableSourceGate() => _queue(() async {
-    _requireAdmin();
-    await _commit({
-      'sourceGateEnabled': false,
-      'sourceGateOff': true,
-      'sourceGateSalt': '',
-      'sourceGateHash': '',
-    });
-    _gateEnabled = false;
-    _gateOff = true;
-    _gateSalt = '';
-    _gateHash = '';
-    _sourcesUnlocked = false;
-    _notify();
-  });
 
   void _loadLibrary() {
-    _lanDocumentCache = null;
     _history.clear();
     _favorites.clear();
     _followStates.clear();
-    _seriesCandidates.clear();
     if (_configurationError != null) return;
     for (final row in readJsonList(_string(_key('history')))) {
       try {
@@ -278,13 +191,48 @@ class LocalStore extends ChangeNotifier {
           Map<String, dynamic>.from(states[drama.id] as Map),
         );
       } catch (_) {
-        _followStates[drama.id] = FollowState.initial(
-          drama,
-          _history[drama.id],
-        );
+        _followStates[drama.id] = FollowState.initial(drama);
       }
     }
-    for (final row in readJsonList(_string(_key('seriesCandidates')))) {
+  }
+
+  String _seriesKey([String? id]) => 'seriesCandidates.${id ?? _current}';
+  String _followChecksKey([String? id]) => 'followChecks.${id ?? _current}';
+
+  Map<String, FollowCheck> get followChecks {
+    try {
+      final data =
+          jsonDecode(preferences.getString(_followChecksKey()) ?? '{}') as Map;
+      return {
+        for (final entry in data.entries)
+          entry.key as String: FollowCheck.fromJson(entry.value),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> saveFollowChecks(
+    Map<String, FollowCheck> checks, {
+    required int epoch,
+  }) => _queue(() async {
+    if (locked || epoch != _epoch) return;
+    await preferences.setString(
+      _followChecksKey(),
+      jsonEncode({
+        for (final entry in checks.entries)
+          if (_favorites.containsKey(entry.key))
+            entry.key: entry.value.toJson(),
+      }),
+    );
+  });
+
+  void _loadSeriesCandidates() {
+    _seriesCandidates.clear();
+    if (_configurationError != null) return;
+    for (final row in readJsonList(
+      preferences.getString(_seriesKey()) ?? _string(_key('seriesCandidates')),
+    )) {
       try {
         final drama = Drama.fromJson(row);
         if (drama.source == SourceSite.hongguo.id) {
@@ -292,6 +240,24 @@ class LocalStore extends ChangeNotifier {
         }
       } catch (_) {}
     }
+  }
+
+  Future<void> _moveSeriesCandidates() async {
+    if (_configurationError != null) return;
+    final legacy = {
+      for (final profile in _profiles)
+        profile.id: ?_string(_key('seriesCandidates', profile.id)),
+    };
+    if (legacy.isEmpty) return;
+    for (final entry in legacy.entries) {
+      if (preferences.getString(_seriesKey(entry.key)) == null) {
+        await preferences.setString(_seriesKey(entry.key), entry.value);
+      }
+    }
+    await _commit(
+      {},
+      remove: legacy.keys.map((id) => _key('seriesCandidates', id)),
+    );
   }
 
   List<WatchEntry> get history =>
@@ -305,12 +271,7 @@ class LocalStore extends ChangeNotifier {
       .reversed
       .toList();
   WatchEntry? watched(String id) {
-    WatchEntry? entry = _history[id];
-    if (entry == null && isFavorite(id)) {
-      try {
-        entry = lanDocument.records[id]?.watch;
-      } catch (_) {}
-    }
+    final entry = _history[id];
     return entry != null && allowsSource(entry.drama.source) ? entry : null;
   }
 
@@ -360,7 +321,9 @@ class LocalStore extends ChangeNotifier {
       _configurationError == null ? _bool(_key('hideVip')) ?? true : true;
   String get displayMode {
     final value = _configurationError == null ? _string('displayMode') : null;
-    return {'auto', 'television', 'standard'}.contains(value) ? value! : 'auto';
+    return {'auto', 'television', 'phone', 'pad', 'window'}.contains(value)
+        ? value!
+        : 'auto';
   }
 
   String get themeMode {
@@ -368,8 +331,36 @@ class LocalStore extends ChangeNotifier {
     return {'light', 'dark', 'system'}.contains(value) ? value! : 'system';
   }
 
-  bool get autoExport => !locked && (_bool('autoExport') ?? false);
-  bool get exportPosters => !locked && (_bool('exportPosters') ?? false);
+  bool get followSystemColor =>
+      preferences.getBool('followSystemColor') ?? true;
+  ThemeColor get themeColor =>
+      ThemeColor.byName(preferences.getString('themeColor')) ??
+      ThemeColor.orange;
+  bool get sideBarExpanded => preferences.getBool('sideBarExpanded') ?? true;
+  bool get playerWide => preferences.getBool('playerWide') ?? false;
+  ({double left, double top, double extent})? get miniWindow {
+    final values = preferences
+        .getString('miniWindow')
+        ?.split(',')
+        .map(double.tryParse)
+        .toList();
+    if (values == null || values.length != 3 || values.contains(null)) {
+      return null;
+    }
+    return (left: values[0]!, top: values[1]!, extent: values[2]!);
+  }
+
+  bool get televisionKeyboard =>
+      preferences.getBool('televisionKeyboard') ?? false;
+  bool get checkUpdates => preferences.getBool('checkUpdates') ?? true;
+  bool get autoExport => preferences.getBool('autoExport') ?? false;
+  bool get deleteAfterAutoExport =>
+      preferences.getBool('deleteAfterAutoExport') ?? false;
+  bool get deleteAfterManualExport =>
+      preferences.getBool('deleteAfterManualExport') ?? false;
+  bool get shareUsage => preferences.getBool('shareUsage') ?? true;
+  String get ignoredUpdate => preferences.getString('ignoredUpdate') ?? '';
+
   String get source {
     if (locked) return '';
     final value = _string(_key('source')) ?? '';
@@ -468,9 +459,6 @@ class LocalStore extends ChangeNotifier {
     Map<String, Object> changes, {
     Iterable<String> remove = const [],
     bool replace = false,
-    bool trackSync = true,
-    bool syncUrgent = true,
-    Set<String> clearSyncProgress = const {},
   }) async {
     final snapshot = _snapshot;
     if (snapshot == null) throw StateError('请先恢复本地配置');
@@ -479,13 +467,6 @@ class LocalStore extends ChangeNotifier {
       values.remove(key);
     }
     values.addAll(changes);
-    if (trackSync && !replace) {
-      _trackLanChanges(
-        values,
-        keys: {...changes.keys, ...remove},
-        clearProgress: clearSyncProgress,
-      );
-    }
     values.putIfAbsent(
       'profiles',
       () => jsonEncode(_profiles.map((profile) => profile.toJson()).toList()),
@@ -493,17 +474,6 @@ class LocalStore extends ChangeNotifier {
     values.putIfAbsent('activeProfile', () => _current);
     try {
       await snapshot.commit(values);
-      if (trackSync &&
-          !replace &&
-          {...changes.keys, ...remove}.any(
-            (key) =>
-                key == _key('favorites') ||
-                key == _key('history') ||
-                key == _key('followStates'),
-          )) {
-        _lanRevision++;
-        if (syncUrgent) _lanUrgentRevision++;
-      }
     } on SnapshotRecoveryRequired catch (error) {
       _block(error.toString());
       _notify();
@@ -521,10 +491,6 @@ class LocalStore extends ChangeNotifier {
     });
   }
 
-  Future<void> setExportPosters(bool value) =>
-      _setting('exportPosters', value, admin: true);
-  Future<void> setAutoExport(bool value) =>
-      _setting('autoExport', value, admin: true);
   Future<void> setForceLogin(bool value) =>
       _setting('forceLogin', value, admin: true);
   Future<void> setHideVip(bool value) => _setting(_key('hideVip'), value);
@@ -534,13 +500,63 @@ class LocalStore extends ChangeNotifier {
   }
 
   Future<void> setDisplayMode(String value) =>
-      {'auto', 'television', 'standard'}.contains(value)
+      {'auto', 'television', 'phone', 'pad', 'window'}.contains(value)
       ? _setting('displayMode', value)
       : Future.value();
   Future<void> setThemeMode(String value) =>
       {'light', 'dark', 'system'}.contains(value)
       ? _setting('themeMode', value)
       : Future.value();
+  Future<void> setFollowSystemColor(bool value) => _queue(() async {
+    await preferences.setBool('followSystemColor', value);
+    _notify();
+  });
+  Future<void> setThemeColor(ThemeColor value) => _queue(() async {
+    await preferences.setString('themeColor', value.name);
+    _notify();
+  });
+  Future<void> setSideBarExpanded(bool value) => _queue(() async {
+    await preferences.setBool('sideBarExpanded', value);
+    _notify();
+  });
+  Future<void> setPlayerWide(bool value) => _queue(() async {
+    await preferences.setBool('playerWide', value);
+    _notify();
+  });
+  Future<void> setMiniWindow(
+    ({double left, double top, double extent}) value,
+  ) => _queue(
+    () => preferences.setString(
+      'miniWindow',
+      '${value.left},${value.top},${value.extent}',
+    ),
+  );
+  Future<void> setTelevisionKeyboard(bool value) => _queue(() async {
+    await preferences.setBool('televisionKeyboard', value);
+    _notify();
+  });
+  Future<void> setCheckUpdates(bool value) => _queue(() async {
+    await preferences.setBool('checkUpdates', value);
+    _notify();
+  });
+  Future<void> setAutoExport(bool value) => _queue(() async {
+    await preferences.setBool('autoExport', value);
+    _notify();
+  });
+  Future<void> setDeleteAfterAutoExport(bool value) => _queue(() async {
+    await preferences.setBool('deleteAfterAutoExport', value);
+    _notify();
+  });
+  Future<void> setDeleteAfterManualExport(bool value) => _queue(() async {
+    await preferences.setBool('deleteAfterManualExport', value);
+    _notify();
+  });
+  Future<void> setShareUsage(bool value) => _queue(() async {
+    await preferences.setBool('shareUsage', value);
+    _notify();
+  });
+  Future<void> setIgnoredUpdate(String version) =>
+      _queue(() => preferences.setString('ignoredUpdate', version));
   Future<void> setPlaybackPreferences(PlaybackPreferences value) {
     PlaybackPreferences.fromJson(value.toJson());
     return _setting(_key('playback'), jsonEncode(value.toJson()));
@@ -563,7 +579,7 @@ class LocalStore extends ChangeNotifier {
       } else {
         if (entries.length >= 20000) throw StateError('追剧数量已达上限，请先整理追剧');
         entries[drama.id] = drama;
-        states[drama.id] = FollowState.initial(drama, _history[drama.id]);
+        states[drama.id] = FollowState.initial(drama);
       }
       await _commit({
         _key('favorites'): jsonEncode(
@@ -580,21 +596,20 @@ class LocalStore extends ChangeNotifier {
     for (final entry in states.entries) entry.key: entry.value.toJson(),
   });
 
-  Future<void> setFollowStatus(Drama drama, FollowStatus status) {
+  Future<void> removeFavorites(Set<String> ids) {
     final epoch = _epoch;
     return _queue(() async {
-      if (!allowsSource(drama.source) || epoch != _epoch) return;
-      if (!_favorites.containsKey(drama.id) && _favorites.length >= 20000) {
-        throw StateError('追剧数量已达上限，请先整理追剧');
-      }
-      final current = _favorites[drama.id]?.merge(drama) ?? drama;
-      final entries = Map.of(_favorites)..[drama.id] = current;
-      final state =
-          (_followStates[drama.id] ??
-                  FollowState.initial(current, _history[drama.id]))
-              .observe(current)
-              .withStatus(status);
-      final states = Map.of(_followStates)..[drama.id] = state;
+      if (epoch != _epoch) return;
+      final removed = {
+        for (final id in ids)
+          if (_favorites[id] case final drama? when allowsSource(drama.source))
+            id,
+      };
+      if (removed.isEmpty) return;
+      final entries = Map.of(_favorites)
+        ..removeWhere((id, _) => removed.contains(id));
+      final states = Map.of(_followStates)
+        ..removeWhere((id, _) => removed.contains(id));
       await _commit({
         _key('favorites'): jsonEncode(
           entries.values.map((entry) => entry.toJson()).toList(),
@@ -653,7 +668,7 @@ class LocalStore extends ChangeNotifier {
       final states = Map.of(_followStates);
       final favorites = Map.of(_favorites);
       if (following != null) {
-        states[entry.drama.id] = following.afterPlayback(current);
+        states[entry.drama.id] = following.observe(current.drama);
         favorites[entry.drama.id] = favorites[entry.drama.id]!.merge(
           current.drama,
         );
@@ -668,7 +683,7 @@ class LocalStore extends ChangeNotifier {
             favorites.values.map((entry) => entry.toJson()).toList(),
           ),
         },
-      }, syncUrgent: false);
+      });
       _loadLibrary();
       _notify();
     });
@@ -709,29 +724,30 @@ class LocalStore extends ChangeNotifier {
     final epoch = _epoch;
     return _queue(() async {
       if (locked || epoch != _epoch) return;
-      await _commit(
-        {},
-        remove: [_key('history')],
-        clearSyncProgress: {..._history.keys, ...lanDocument.records.keys},
-      );
+      await _commit({}, remove: [_key('history')]);
       _loadLibrary();
       _notify();
     });
   }
 
-  Future<void> removeHistory(String id) {
+  Future<void> removeHistory(Set<String> ids) {
     final epoch = _epoch;
     return _queue(() async {
-      if (watched(id) == null || epoch != _epoch) return;
-      final entries = Map.of(_history)..remove(id);
-      await _commit(
-        {
-          _key('history'): jsonEncode(
-            entries.values.map((entry) => entry.toJson()).toList(),
-          ),
-        },
-        clearSyncProgress: {id},
-      );
+      if (epoch != _epoch) return;
+      final removed = {
+        for (final id in ids)
+          if (_history[id] case final entry?
+              when allowsSource(entry.drama.source))
+            id,
+      };
+      if (removed.isEmpty) return;
+      final entries = Map.of(_history)
+        ..removeWhere((id, _) => removed.contains(id));
+      await _commit({
+        _key('history'): jsonEncode(
+          entries.values.map((entry) => entry.toJson()).toList(),
+        ),
+      });
       _loadLibrary();
       _notify();
     });
@@ -817,15 +833,17 @@ class LocalStore extends ChangeNotifier {
         history.values.map((entry) => entry.toJson()).toList(),
       );
       final statesJson = _encodeFollowStates(states);
-      final seriesCandidateJson = cacheSeriesCandidates
-          ? jsonEncode(
-              (seriesCandidates.values.toList()
-                    ..sort((a, b) => a.id.compareTo(b.id)))
-                  .take(2000)
-                  .map((entry) => entry.toJson())
-                  .toList(),
-            )
+      final cachedCandidates = cacheSeriesCandidates
+          ? (seriesCandidates.values.toList()
+                  ..sort((a, b) => a.id.compareTo(b.id)))
+                .take(2000)
+                .toList()
           : null;
+      final seriesCandidateJson = cachedCandidates == null
+          ? null
+          : jsonEncode(
+              cachedCandidates.map((entry) => entry.toJson()).toList(),
+            );
       if (favoriteJson !=
           jsonEncode(
             _favorites.values.map((entry) => entry.toJson()).toList(),
@@ -839,18 +857,21 @@ class LocalStore extends ChangeNotifier {
       if (statesJson != _encodeFollowStates(_followStates)) {
         changes[_key('followStates')] = statesJson;
       }
-      if (seriesCandidateJson != null &&
-          seriesCandidateJson !=
-              jsonEncode(
-                (_seriesCandidates.values.toList()
-                      ..sort((a, b) => a.id.compareTo(b.id)))
-                    .take(2000)
-                    .map((entry) => entry.toJson())
-                    .toList(),
-              )) {
-        changes[_key('seriesCandidates')] = seriesCandidateJson;
+      final seriesChanged =
+          seriesCandidateJson != null &&
+          seriesCandidateJson != preferences.getString(_seriesKey());
+      if (seriesChanged) {
+        await preferences.setString(_seriesKey(), seriesCandidateJson);
+        _seriesCandidates
+          ..clear()
+          ..addEntries(
+            cachedCandidates!.map((drama) => MapEntry(drama.id, drama)),
+          );
       }
-      if (changes.isEmpty) return;
+      if (changes.isEmpty) {
+        if (seriesChanged) _notify();
+        return;
+      }
       await _commit(changes);
       _loadLibrary();
       _notify();
@@ -885,6 +906,7 @@ class LocalStore extends ChangeNotifier {
     _current = id;
     _locked = false;
     _loadLibrary();
+    _loadSeriesCandidates();
     _epoch++;
     _notify();
   });
@@ -974,6 +996,8 @@ class LocalStore extends ChangeNotifier {
         profiles.map((profile) => profile.toJson()).toList(),
       ),
     }, remove: LocalSnapshot.libraryKeys.map((key) => _key(key, id)));
+    await preferences.remove(_seriesKey(id));
+    await preferences.remove(_followChecksKey(id));
     _profiles = profiles;
     _notify();
   });
@@ -987,20 +1011,22 @@ class LocalStore extends ChangeNotifier {
       'profiles': _profiles.map((profile) => profile.toJson()).toList(),
       'displayMode': displayMode,
       'themeMode': themeMode,
-      'autoExport': autoExport,
-      'exportPosters': exportPosters,
+      'followSystemColor': followSystemColor,
+      'themeColor': themeColor.name,
+      'autoExport': _bool('autoExport') ?? false,
+      'exportPosters': _bool('exportPosters') ?? false,
       'forceLogin': forceLogin,
       'libraries': {
         for (final profile in _profiles)
           profile.id: {
-            ..._backupFollowSync(profile.id),
             'history': readJsonList(_string(_key('history', profile.id))),
             'favorites': readJsonList(_string(_key('favorites', profile.id))),
             'followStates': jsonDecode(
               _string(_key('followStates', profile.id)) ?? '{}',
             ),
             'seriesCandidates': readJsonList(
-              _string(_key('seriesCandidates', profile.id)),
+              preferences.getString(_seriesKey(profile.id)) ??
+                  _string(_key('seriesCandidates', profile.id)),
             ),
             'mediaHistory': jsonDecode(
               _string(_key('mediaHistory', profile.id)) ?? '{}',
@@ -1042,6 +1068,12 @@ class LocalStore extends ChangeNotifier {
         !{'light', 'dark', 'system'}.contains(data['themeMode'])) {
       throw const FormatException('备份主题设置无效');
     }
+    if (data.containsKey('followSystemColor') &&
+            data['followSystemColor'] is! bool ||
+        data.containsKey('themeColor') &&
+            ThemeColor.byName(data['themeColor']) == null) {
+      throw const FormatException('备份主题色设置无效');
+    }
     if (data.containsKey('forceLogin') && data['forceLogin'] is! bool) {
       throw const FormatException('备份登录设置无效');
     }
@@ -1065,7 +1097,6 @@ class LocalStore extends ChangeNotifier {
       final states = library['followStates'] as Map? ?? {};
       final seriesCandidates = library['seriesCandidates'] as List? ?? [];
       final favoriteIds = favorites.map((row) => (row as Map)['id']).toSet();
-      _readBackupFollowSync(library);
       if (states.length > 20000 ||
           states.keys.any((id) => id is! String || !favoriteIds.contains(id))) {
         throw const FormatException('备份追剧状态无效');
@@ -1110,7 +1141,13 @@ class LocalStore extends ChangeNotifier {
       ),
       'activeProfile': profiles.firstWhere((profile) => profile.admin).id,
       'displayMode':
-          {'auto', 'television', 'standard'}.contains(data['displayMode'])
+          {
+            'auto',
+            'television',
+            'phone',
+            'pad',
+            'window',
+          }.contains(data['displayMode'])
           ? data['displayMode'] as String
           : 'auto',
       'themeMode': data['themeMode'] as String? ?? themeMode,
@@ -1123,19 +1160,11 @@ class LocalStore extends ChangeNotifier {
     final libraries = data['libraries'] as Map;
     for (final profile in profiles) {
       final library = libraries[profile.id] as Map;
-      final syncRecords = _readBackupFollowSync(library);
       values.addAll({
-        if (syncRecords != null)
-          _key('lanRecords', profile.id): jsonEncode(
-            LanDocument(replica: lanID(), records: syncRecords).toJson(),
-          ),
         _key('history', profile.id): jsonEncode(library['history']),
         _key('favorites', profile.id): jsonEncode(library['favorites']),
         _key('followStates', profile.id): jsonEncode(
           library['followStates'] ?? {},
-        ),
-        _key('seriesCandidates', profile.id): jsonEncode(
-          library['seriesCandidates'] ?? [],
         ),
         _key('mediaHistory', profile.id): jsonEncode(
           library['mediaHistory'] ?? {},
@@ -1155,12 +1184,28 @@ class LocalStore extends ChangeNotifier {
       });
     }
     await _commit(values, replace: true);
+    if (data['followSystemColor'] case final bool follow) {
+      await preferences.setBool('followSystemColor', follow);
+    }
+    if (ThemeColor.byName(data['themeColor']) case final color?) {
+      await preferences.setString('themeColor', color.name);
+    }
+    for (final key in preferences.getKeys().toList()) {
+      if (key.startsWith('seriesCandidates.')) await preferences.remove(key);
+    }
+    for (final profile in profiles) {
+      await preferences.setString(
+        _seriesKey(profile.id),
+        jsonEncode((libraries[profile.id] as Map)['seriesCandidates'] ?? []),
+      );
+    }
     _profiles = profiles;
     _current = profiles.firstWhere((profile) => profile.admin).id;
     _configurationError = null;
     _locked = forceLogin && profile.protected;
-    _loadSourceGate();
+    _loadSourceSwitches();
     _loadLibrary();
+    _loadSeriesCandidates();
     _epoch++;
     _notify();
   }

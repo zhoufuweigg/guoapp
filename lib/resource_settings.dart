@@ -33,6 +33,24 @@ class ResourceSettings {
         systemProxyStatus: data['systemProxyStatus'] as String? ?? '',
       );
 
+  ResourceSettings copyWith({
+    String? proxyMode,
+    String? proxyUrl,
+    int? catalogConcurrency,
+    int? catalogIntervalMs,
+    int? downloadConcurrency,
+    bool? downloadBySource,
+  }) => ResourceSettings(
+    proxyMode: proxyMode ?? this.proxyMode,
+    proxyUrl: proxyUrl ?? this.proxyUrl,
+    catalogConcurrency: catalogConcurrency ?? this.catalogConcurrency,
+    catalogIntervalMs: catalogIntervalMs ?? this.catalogIntervalMs,
+    downloadConcurrency: downloadConcurrency ?? this.downloadConcurrency,
+    downloadBySource: downloadBySource ?? this.downloadBySource,
+    warning: warning,
+    systemProxyStatus: systemProxyStatus,
+  );
+
   Map<String, dynamic> toJson() => {
     'proxyMode': proxyMode,
     'proxyUrl': proxyUrl,
@@ -51,7 +69,7 @@ class SystemProxyMonitor with WidgetsBindingObserver {
   bool _reading = false;
 
   static void start(Future<void> Function(Map<String, dynamic>) update) {
-    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (!Platform.isAndroid && !Platform.isIOS && !Platform.isMacOS) return;
     _current?._timer?.cancel();
     if (_current != null) WidgetsBinding.instance.removeObserver(_current!);
     final monitor = SystemProxyMonitor._(update);

@@ -50,7 +50,7 @@ func TestNativeHLSDecodesEncryptedSyntheticMedia(t *testing.T) {
 		files.ServeHTTP(w, r)
 	}))
 	defer upstream.Close()
-	engine, err := newNativeEngine(t.TempDir())
+	engine, err := newNativeEngine(t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

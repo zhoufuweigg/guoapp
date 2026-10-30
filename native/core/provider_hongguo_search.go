@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -19,12 +20,15 @@ const (
 	hongguoSearchPageTimeout  = 12 * time.Second
 	hongguoSearchPendingLimit = 32
 	hongguoSearchNameCount    = 50
+	hongguoSearchPageSize     = 10
+	hongguoSearchSeriesTab    = "29"
+	hongguoSearchTabPath      = "/reading/bookapi/search/tab/v/"
 )
 
 type hongguoSearchEntry struct {
 	Dramas    []Drama
 	Total     int
-	Limited   bool
+	HasMore   bool
 	Warning   string
 	ExpiresAt time.Time
 }
@@ -151,21 +155,21 @@ func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword st
 	names, namesErr := downloader.fetchHongguoSearchNames(ctx, keyword)
 	if err := ctx.Err(); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && len(names) > 0 {
-			return hongguoSearchEntry{Dramas: names, Total: len(names), Limited: true, Warning: "搜索已到时限，已保留名称匹配结果，可重试"}, nil
+			return hongguoSearchEntry{Dramas: names, Total: len(names), Warning: "搜索已到时限，已保留名称匹配结果，可重试"}, nil
 		}
 		return hongguoSearchEntry{}, err
 	}
-	reportHongguoSearchProgress(ctx, hongguoSearchEntry{Dramas: mergeHongguoSearchDramas([]Drama{}, names), Limited: true})
+	reportHongguoSearchProgress(ctx, hongguoSearchEntry{Dramas: mergeHongguoSearchDramas([]Drama{}, names)})
 	pageCtx, cancel := context.WithTimeout(ctx, hongguoSearchPageTimeout)
 	defer cancel()
-	page, pageErr := downloader.fetchHongguoSearchPage(pageCtx, keyword)
+	page, pageErr := downloader.fetchHongguoSearchPage(pageCtx, keyword, 1)
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return hongguoSearchEntry{}, ctx.Err()
 	}
 	if pageErr != nil && namesErr != nil || len(page.Dramas)+len(names) == 0 && (pageErr != nil || namesErr != nil) {
 		return hongguoSearchEntry{}, errors.Join(pageErr, namesErr)
 	}
-	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, len(page.Dramas)+len(names)), Total: page.Total, Limited: page.Limited}
+	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, len(page.Dramas)+len(names)), Total: page.Total, HasMore: page.HasMore}
 	for _, batch := range [][]Drama{page.Dramas, names} {
 		entry.Dramas = mergeHongguoSearchDramas(entry.Dramas, batch)
 	}
@@ -200,7 +204,6 @@ func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword st
 		}
 		entry.Warning += "部分季数暂未补齐，已保留当前结果，可重试"
 	}
-	entry.Limited = entry.Limited || pageErr != nil || namesErr != nil || seasonsLimited
 	if entry.Total < len(entry.Dramas) {
 		entry.Total = len(entry.Dramas)
 	}
@@ -291,35 +294,56 @@ func hongguoTitleSearchRank(title, query string) int {
 	}
 }
 
-func (downloader *Downloader) fetchHongguoSearchPage(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
-	pageURL := hongguoBaseURL + "/search/" + url.PathEscape(keyword)
-	body, err := downloader.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
+func (downloader *Downloader) fetchHongguoSearchPage(ctx context.Context, keyword string, pageNum int) (hongguoSearchEntry, error) {
+	client := downloader.hongguoClient()
+	offset := strconv.Itoa((pageNum - 1) * hongguoSearchPageSize)
+	query := url.Values{"query": {keyword}, "offset": {offset}, "count": {strconv.Itoa(hongguoSearchPageSize)}, "tab_type": {hongguoSearchSeriesTab}}
+	if pageNum > 1 {
+		query.Set("passback", offset)
+		client.mu.Lock()
+		searchID := client.searchIDs[keyword]
+		client.mu.Unlock()
+		if searchID != "" {
+			query.Set("search_id", searchID)
+		}
+	}
+	result, err := downloader.hongguoAppRequest(ctx, http.MethodGet, hongguoSearchTabPath, query, nil)
 	if err != nil {
 		return hongguoSearchEntry{}, err
 	}
-	page := routerLoaderMap(parseRouterData(body), "search_(keyword)/page", "search_")
-	rows, valid := page["searchList"].([]any)
-	if page["isSuccess"] != true || !valid || mapString(page, "query") != keyword {
+	var tab map[string]any
+	for _, item := range anyList(result["search_tabs"]) {
+		if candidate, _ := item.(map[string]any); mapString(candidate, "tab_type") == hongguoSearchSeriesTab {
+			tab = candidate
+		}
+	}
+	if tab == nil {
 		return hongguoSearchEntry{}, errors.New("红果搜索未返回有效结果")
 	}
-	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, len(rows))}
-	seen := make(map[string]bool, len(rows))
-	for _, row := range rows {
-		if len(nestedMap(row, "video_data")) == 0 {
-			continue
+	if searchID := mapString(tab, "search_id"); pageNum == 1 && searchID != "" {
+		client.mu.Lock()
+		if len(client.searchIDs) >= 64 {
+			client.searchIDs = map[string]string{}
 		}
-		drama := hongguoDramaFromAny(row, "短剧")
-		if drama.ID != "" && !seen[drama.ID] {
-			seen[drama.ID] = true
-			entry.Dramas = append(entry.Dramas, drama)
+		client.searchIDs[keyword] = searchID
+		client.mu.Unlock()
+	}
+	cells := anyList(tab["data"])
+	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, len(cells)), HasMore: tab["has_more"] == true}
+	seen := make(map[string]bool, len(cells))
+	for _, cell := range cells {
+		row, _ := cell.(map[string]any)
+		for _, video := range anyList(row["video_data"]) {
+			drama := hongguoDramaFromAny(map[string]any{"video_data": video}, "短剧")
+			if drama.ID != "" && !seen[drama.ID] {
+				seen[drama.ID] = true
+				entry.Dramas = append(entry.Dramas, drama)
+			}
 		}
 	}
-	if len(rows) > 0 && len(entry.Dramas) == 0 {
+	if len(cells) > 0 && len(entry.Dramas) == 0 {
 		return hongguoSearchEntry{}, errors.New("红果搜索结果中没有可识别的剧集")
 	}
-	entry.Total, _ = strconv.Atoi(mapString(page, "totalCount"))
-
-	entry.Limited = entry.Total > len(entry.Dramas)
 	if entry.Total < len(entry.Dramas) {
 		entry.Total = len(entry.Dramas)
 	}

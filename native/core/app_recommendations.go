@@ -111,7 +111,7 @@ func (engine *nativeEngine) nativeRecommendations(ctx context.Context, input nat
 	if session == "" {
 		session = state.Query.SessionID
 	}
-	state.Query = hongguoRecommendationQuery{Genre: genre, Offset: page.NextOffset, SessionID: session, Seen: identifiers}
+	state.Query = hongguoRecommendationQuery{Genre: genre, Offset: page.NextOffset, SessionID: session, CellID: page.CellID, ShowType: page.ShowType, Seen: identifiers}
 	state.Page++
 	state.HasMore = page.HasMore
 	engine.recommendations[genre] = state

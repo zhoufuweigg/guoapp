@@ -11,26 +11,12 @@ import (
 	"strings"
 )
 
-// 鬼片网（guipian）原生站源：MacCMS 风格的 HTML 站点，鬼片/电视剧/动漫三大类。
-//
-// 上游页面（实测 2026-09）：
-//   GET /list/{id}.html          分类首页（第 1 页）
-//   GET /list/{id}_{page}.html   分类翻页
-//   GET /nv/{id}.html            详情（含多线路播放列表）
-//   GET /play/{id}-{line}-{ep}.html  播放页（var now="<m3u8>"）
-//   GET /xml/rss.xml             最新影片 RSS（站点搜索已停用，用它做标题匹配）
-//
-// 站点搜索接口已停用（/index.php/search/wd/*.html 恒等于首页），因此搜索改为
-// 在 RSS 最新条目里做标题匹配，命中范围限于最新一批影片。
-
 const (
 	guipianSiteBaseURL = "https://guipianwu.com"
 	guipianUserAgent   = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
 	guipianPageSize    = 24
 )
 
-// guipianCategories 是站点各分类页给出的可翻页叶子分类（实测均能正常翻页）。
-// 大类聚合页（1/2/4）不提供翻页且与叶子分类内容重叠，故不单独列出。
 var guipianCategories = []nativeCategory{
 	{ID: "3", Name: "恐怖片"},
 	{ID: "6", Name: "大陆鬼片"},
@@ -104,7 +90,6 @@ func guipianNumericID(value string) bool {
 	return err == nil && number > 0
 }
 
-// guipianClean 去标签、解 HTML 实体、压缩空白。
 func guipianClean(text string) string {
 	if text == "" {
 		return ""
@@ -174,7 +159,6 @@ func (d *Downloader) guipianGet(ctx context.Context, path string) (string, error
 	return d.fetchProviderText(pageContext, address, site+"/")
 }
 
-// parseGuipianCards 从主列表容器解析卡片。
 func parseGuipianCards(body string) []Drama {
 	segment := body
 	if match := reGuipianMainList.FindStringSubmatch(body); len(match) > 1 {
@@ -214,7 +198,6 @@ func parseGuipianCards(body string) []Drama {
 	return items
 }
 
-// guipianPageCount 从分页链接推断末页；拿不到时按当前页是否满页保守判断。
 func guipianPageCount(body, category string, page, count int) int {
 	pattern := regexp.MustCompile(fmt.Sprintf(`(?is)/list/%s_(\d+)\.html`, regexp.QuoteMeta(category)))
 	maxPage := page
@@ -285,7 +268,6 @@ func guipianActors(body string) string {
 	return strings.Join(names, " ")
 }
 
-// guipianPickPlaylist 选出分集最多的一条线路。
 func guipianPickPlaylist(body string) (string, []Chapter, error) {
 	tabs := reGuipianTab.FindAllStringSubmatch(body, -1)
 	if len(tabs) == 0 {
@@ -301,8 +283,6 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 			continue
 		}
 		seen[anchor] = true
-		// Go RE2 不支持 lookahead，改用显式字符串截断：从本容器标记之后
-		// 截到下一个 playlist-slide 或 </section>，避免消耗式分组吃掉下一条线路的开头。
 		marker := fmt.Sprintf(`id="%s"`, anchor)
 		start := strings.Index(body, marker)
 		if start < 0 {
@@ -361,7 +341,6 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 	return bestName, best, nil
 }
 
-// guipianPlayURL 把播放锚点归一成绝对 URL，并校验同源。
 func guipianPlayURL(href string) string {
 	href = strings.TrimSpace(href)
 	if href == "" {
@@ -455,7 +434,6 @@ func (d *Downloader) fetchGuipianDetail(ctx context.Context, sourceID string) (D
 	if err != nil {
 		return Drama{}, nil, err
 	}
-	// 分集 ID 里带的是完整播放页 URL，回填 sourceID 前缀便于播放阶段校验归属。
 	for index := range chapters {
 		chapters[index].ID = providerChapterID(sourceGuipian, sourceID, chapters[index].PageURL)
 	}
@@ -508,7 +486,6 @@ func (d *Downloader) resolveGuipianMedia(ctx context.Context, task Task) (provid
 	return media, nil
 }
 
-// searchGuipian 在 RSS 最新条目里做标题匹配（站点搜索接口已停用）。
 func (d *Downloader) searchGuipian(ctx context.Context, page int, query string) ([]Drama, bool, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || len(query) > 256 {

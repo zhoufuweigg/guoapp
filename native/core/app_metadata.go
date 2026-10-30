@@ -65,6 +65,16 @@ func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativ
 	return drama, ctx.Err()
 }
 
+func (engine *nativeEngine) nativeFollowCheck(ctx context.Context, drama nativeDrama) (any, error) {
+	ctx, cancel := context.WithTimeout(context.WithValue(ctx, backgroundCatalogKey{}, true), 20*time.Second)
+	defer cancel()
+	result, err := engine.nativeDetail(ctx, drama)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"drama": result.(map[string]any)["drama"]}, nil
+}
+
 func (engine *nativeEngine) nativeMetadata(ctx context.Context, drama nativeDrama) (any, error) {
 	fresh, err := engine.nativeExtraMetadata(ctx, drama)
 	if err != nil {

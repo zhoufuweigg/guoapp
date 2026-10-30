@@ -1,0 +1,12 @@
+name = "guoapp-update"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[triggers]
+crons = ["17 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "guoapp-stats"
+database_id = "27ba0660-0df0-4b5f-ac14-5406b48cdb09"

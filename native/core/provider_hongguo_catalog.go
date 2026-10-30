@@ -66,7 +66,10 @@ func (downloader *Downloader) fetchHongguoAppCatalogCategory(ctx context.Context
 		pageLimit = 200
 	}
 	headLimit := min(pageLimit, 3)
-	roundLimit := pageLimit
+	if background, _ := ctx.Value(backgroundCatalogKey{}).(bool); !background {
+		pageLimit = min(pageLimit, max(1, 3/len(genres)))
+	}
+	roundLimit := max(pageLimit, headLimit)
 	if update {
 		roundLimit += headLimit
 	}
@@ -107,7 +110,7 @@ func (downloader *Downloader) fetchHongguoAppCatalogCategory(ctx context.Context
 				cursor.SessionID = ""
 			}
 			payload := map[string]any{
-				"req_scene": genre.scene, "offset": cursor.Offset, "limit": 18,
+				"req_scene": genre.scene, "offset": cursor.Offset, "limit": 54,
 				"req_type": "only_content", "need_selector_panel": false, "client_req_type": 3,
 				"session_id": cursor.SessionID, "filter_ids": "",
 				"select_items": map[string]any{

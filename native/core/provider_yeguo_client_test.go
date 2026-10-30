@@ -76,6 +76,18 @@ func TestYeguoAPIClientUsesRouteMethods(t *testing.T) {
 	}
 }
 
+func TestYeguoScriptAPIBaseFollowsRequestHelper(t *testing.T) {
+	script := "globalThis.$fetch=Qi.create({baseURL:ta()});ta=()=>ea().baseURL,xud=()=>`https://wrong.example/api.php`," +
+		"ud=()=>`https://api.example/api.php/`;function $(e,t){return u(e,{baseURL:ud(),method:a})}" +
+		"var Bd=(e={},t)=>$(`/api/home/homePage`,e,t)"
+	if got := yeguoScriptAPIBase(script); got != "https://api.example/api.php" {
+		t.Fatalf("api base = %q", got)
+	}
+	if got := yeguoScriptAPIBase("ud=()=>`https://api.example/api.php?x=1`;u(e,{baseURL:ud()})"); got != "" {
+		t.Fatalf("api base with query accepted: %q", got)
+	}
+}
+
 func TestResolveYeguoMediaKeepsCodecAlternatives(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/playlet/play" {

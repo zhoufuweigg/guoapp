@@ -90,10 +90,14 @@ func parseHongguoAppDetail(result map[string]any, seriesID string) (hongguoDetai
 			return entry, errors.New("红果 App 返回了重复分集")
 		}
 		seen[videoID], episodes[index] = true, true
-		entry.Chapters = append(entry.Chapters, Chapter{
+		chapter := Chapter{
 			ID: providerChapterID(sourceHongguo, seriesID, videoID), Source: sourceHongguo,
 			Title: fmt.Sprintf("第%d集", index), VideoURL: "hongguo-cenc://" + videoID, CurrentEpisode: rawEpisode(index),
-		})
+		}
+		if vertical, ok := video["vertical"].(bool); ok {
+			chapter.Vertical = &vertical
+		}
+		entry.Chapters = append(entry.Chapters, chapter)
 	}
 	sort.Slice(entry.Chapters, func(left, right int) bool {
 		leftIndex, _ := strconv.Atoi(entry.Chapters[left].EpisodeString(left + 1))

@@ -11,17 +11,6 @@ import (
 	"strings"
 )
 
-// 青空次元（sorani）原生站源：纯 JSON API，番剧/剧场/特摄三类。
-//
-// 上游接口（实测 2026-09）：
-//   GET /video?page=&size=&categoryId=        目录
-//   GET /video/{id}                           详情（含 episodes[]）
-//   GET /video/search?keyword=&page=&size=    搜索
-//   GET /video/tags                           标签（未用于目录，保留扩展位）
-//   GET /video/episode/{episodeId}/play?lineCode=anime_jp_m3u8   播放
-//
-// 默认线路 anime_jp_m3u8 为实测有效线；lineCode 必须精确匹配，其余取值返回空 playUrl。
-
 const (
 	soraniLineCodeDefault = "anime_jp_m3u8"
 
@@ -31,8 +20,6 @@ const (
 	soraniMaxID       = 64
 )
 
-// soraniCategories 是上游固定的三个一级分类，实测均有数据：
-// categoryId=1 → TV番剧 3782；2 → 剧场动画 848；5 → 特摄剧场 65。
 var soraniCategories = []nativeCategory{
 	{ID: "1", Name: "TV番剧"},
 	{ID: "2", Name: "剧场动画"},
@@ -54,7 +41,6 @@ func validSoraniCategory(category string) bool {
 	return false
 }
 
-// soraniNumericID 校验上游自增数字 ID（videoId / episodeId）。
 func soraniNumericID(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > soraniMaxID {
@@ -68,8 +54,6 @@ func soraniCover(value any) string {
 	return providerCoverAddress(value, soraniSiteBaseURL+"/")
 }
 
-// soraniDramaFromMap 把上游记录映射成 Drama。
-// 记录字段跨列表/详情/搜索三种响应一致（实测），因此复用同一映射。
 func soraniDramaFromMap(row map[string]any) (Drama, error) {
 	if row == nil {
 		return Drama{}, errors.New("青空次元返回的剧集信息不完整")
@@ -173,7 +157,6 @@ func firstAnyValue(row map[string]any, keys ...string) any {
 	return nil
 }
 
-// soraniPayload 兼容 {code,data:{...}} 与 {code,data:[...]} 两种包裹。
 func soraniPayload(value any) any {
 	row, ok := value.(map[string]any)
 	if !ok {
@@ -185,7 +168,6 @@ func soraniPayload(value any) any {
 	return value
 }
 
-// soraniRecordList 从 data 中取出记录数组，兼容 records / list / 裸数组。
 func soraniRecordList(payload any) ([]any, bool) {
 	switch value := payload.(type) {
 	case []any:
@@ -206,7 +188,6 @@ func (d *Downloader) soraniRequest(ctx context.Context, route string, query url.
 	return d.soraniClient().get(ctx, route, query, limit)
 }
 
-// fetchSoraniCategories 返回固定三分类，无需远端探测。
 func (d *Downloader) fetchSoraniCategories() []nativeCategory {
 	return append([]nativeCategory(nil), soraniCategories...)
 }
@@ -317,8 +298,6 @@ func (d *Downloader) fetchSoraniDetail(ctx context.Context, sourceID string) (Dr
 		if title == "" {
 			title = fmt.Sprintf("第 %d 集", order)
 		}
-		// VideoURL 是占位符：真实播放地址在 playerContent 阶段按 episodeId 实时换取，
-		// 避免详情页展开时就向上游逐个请求 play 接口。
 		chapters = append(chapters, Chapter{
 			ID: providerChapterID(sourceSorani, sourceID, episodeID), Source: sourceSorani,
 			Title: truncate(title, 128), CurrentEpisode: json.RawMessage(strconv.Itoa(order)),
@@ -337,7 +316,6 @@ func (d *Downloader) fetchSoraniDetail(ctx context.Context, sourceID string) (Dr
 	return drama, chapters, nil
 }
 
-// resolveSoraniMedia 用章节 ID 里携带的 episodeId 实时换取 m3u8 直链。
 func (d *Downloader) resolveSoraniMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, sourceID, valid := splitProviderDramaID(task.DramaID)
 	prefix := providerChapterID(sourceSorani, sourceID, "")
@@ -348,8 +326,6 @@ func (d *Downloader) resolveSoraniMedia(ctx context.Context, task Task) (provide
 	if !soraniNumericID(episodeID) {
 		return providerMedia{}, errors.New("青空次元分集 ID 无效")
 	}
-	// 目前仅 anime_jp_m3u8 一条线实测有效；lineCode 已编码进章节 ID 的前缀之外无额外承载位，
-	// 因此固定走默认线。若上游将来提供多线，可把 lineCode 追加进 providerChapterID 的 chapterKey。
 	lineCode := soraniLineCodeDefault
 	value, err := d.soraniRequest(ctx, "/video/episode/"+url.PathEscape(episodeID)+"/play",
 		url.Values{"lineCode": {lineCode}}, 64<<10)
