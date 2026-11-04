@@ -149,7 +149,7 @@ void main() {
     },
   );
 
-  testWidgets('picture-in-picture hides app overlay controls', (tester) async {
+  testWidgets('player controls omit the picture-in-picture entry', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -157,8 +157,6 @@ void main() {
       switch (call.method) {
         case 'pictureInPictureStatus':
           return {'supported': true, 'active': false};
-        case 'enterPictureInPicture':
-          return {'supported': true, 'active': true, 'requested': true};
       }
       return null;
     });
@@ -168,25 +166,14 @@ void main() {
       await mount(tester, repository, player, size: const Size(390, 844));
       expect(
         find.byKey(const ValueKey('player-picture-in-picture')),
-        findsOneWidget,
+        findsNothing,
       );
+      expect(find.byKey(const ValueKey('player-speed')), findsOneWidget);
+      expect(find.byKey(const ValueKey('player-quality')), findsOneWidget);
+      expect(find.byKey(const ValueKey('player-fit-type')), findsOneWidget);
       expect(find.text('选集'), findsOneWidget);
       expect(find.text('简介'), findsOneWidget);
       expect(find.text('下载'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('player-picture-in-picture')));
-      await tester.pump();
-      await tester.pump();
-      await settleOperations(tester);
-      expect(
-        find.byKey(const ValueKey('player-picture-in-picture')),
-        findsNothing,
-      );
-      expect(find.byKey(const ValueKey('player-speed')), findsNothing);
-      expect(find.byKey(const ValueKey('player-quality')), findsNothing);
-      expect(find.byKey(const ValueKey('player-progress')), findsNothing);
-      expect(find.text('选集'), findsNothing);
-      expect(find.text('简介'), findsNothing);
-      expect(find.text('下载'), findsNothing);
       await unmount(tester, player);
     } finally {
       messenger.setMockMethodCallHandler(AppDevice.channel, null);
@@ -239,13 +226,54 @@ void main() {
       final quality = tester.getRect(
         find.byKey(const ValueKey('player-quality')),
       );
-      final pip = tester.getRect(
-        find.byKey(const ValueKey('player-picture-in-picture')),
+      final fit = tester.getRect(
+        find.byKey(const ValueKey('player-fit-type')),
       );
       expect(quality.left - speed.right, lessThan(8));
-      expect(pip.left - quality.right, lessThan(8));
-      expect(pip.right, greaterThan(330));
+      expect(fit.left - quality.right, lessThan(8));
+      expect(fit.right, greaterThan(330));
       await unmount(tester, player);
+    } finally {
+      messenger.setMockMethodCallHandler(AppDevice.channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('playing keeps the screen on and pausing releases it', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final keepScreenOnCalls = <bool>[];
+    messenger.setMockMethodCallHandler(AppDevice.channel, (call) async {
+      if (call.method == 'setKeepScreenOn') {
+        keepScreenOnCalls.add(call.arguments['enabled'] as bool);
+        return true;
+      }
+      return null;
+    });
+    try {
+      final repository = RouteRepository();
+      final player = ScriptedPlayer();
+      await mount(tester, repository, player, size: const Size(390, 844));
+      // 播放中：屏幕保持常亮
+      expect(keepScreenOnCalls, isNotEmpty);
+      expect(keepScreenOnCalls.last, isTrue);
+
+      // 暂停：解除常亮，允许系统正常息屏
+      await tester.tap(find.byTooltip('暂停播放'));
+      await settleOperations(tester);
+      expect(keepScreenOnCalls.last, isFalse);
+
+      // 恢复播放：重新保持常亮
+      await tester.tap(find.byTooltip('开始播放'));
+      await settleOperations(tester);
+      expect(keepScreenOnCalls.last, isTrue);
+
+      // 退出播放：确保常亮标志被清除，不影响其他页面
+      await unmount(tester, player);
+      expect(keepScreenOnCalls.last, isFalse);
     } finally {
       messenger.setMockMethodCallHandler(AppDevice.channel, null);
       debugDefaultTargetPlatformOverride = null;

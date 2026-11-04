@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 
 export 'app_build.dart';
 
-const appVersion = '0.2.64';
+const appVersion = '0.2.76';
 
 ThemeData televisionTheme(ThemeData theme) {
   final colors = theme.colorScheme;
@@ -98,6 +98,44 @@ class AppDevice {
     if (defaultTargetPlatform != TargetPlatform.android) return;
     try {
       await channel.invokeMethod('resetBrightness');
+    } catch (_) {}
+  }
+
+  /// 读取系统媒体音量（0..1）。非 Android 平台、服务不可用或调用失败
+  /// 返回 null，调用方据此回退到播放器内部音量
+  static Future<double?> getSystemVolume() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return null;
+    try {
+      final data = await channel.invokeMapMethod<String, dynamic>('getSystemVolume');
+      final volume = data?['volume'];
+      final max = data?['max'];
+      if (volume is! int || max is! int || max <= 0) return null;
+      return (volume / max).clamp(0.0, 1.0);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 设置系统媒体音量（0..1），返回是否写入成功
+  static Future<bool> setSystemVolume(double volume) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    try {
+      final ok = await channel.invokeMethod<bool>(
+        'setSystemVolume',
+        {'volume': volume.clamp(0.0, 1.0)},
+      );
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 播放时常亮：借 FLAG_KEEP_SCREEN_ON 让窗口可见期间屏幕不熄灭，
+  /// 不受系统省电策略的自动息屏/降亮度影响
+  static Future<void> setKeepScreenOn(bool enabled) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await channel.invokeMethod('setKeepScreenOn', {'enabled': enabled});
     } catch (_) {}
   }
 }

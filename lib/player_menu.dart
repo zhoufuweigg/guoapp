@@ -9,7 +9,7 @@ import 'video_enhancement.dart';
 import 'video_enhancement_settings.dart';
 import 'diary_service.dart';
 
-enum PlayerMenuSection { episodes, speed, quality, settings }
+enum PlayerMenuSection { episodes, speed, quality, fit, settings }
 
 class PlayerMenu extends StatefulWidget {
   const PlayerMenu({
@@ -85,6 +85,7 @@ class _PlayerMenuState extends State<PlayerMenu> {
       PlayerMenuSection.episodes => '选集 · 共 ${widget.episodes.length} 集',
       PlayerMenuSection.speed => '播放倍速',
       PlayerMenuSection.quality => '清晰度',
+      PlayerMenuSection.fit => '画面比例',
       PlayerMenuSection.settings => '播放设置',
     };
     return Dialog(
@@ -263,6 +264,169 @@ class _PlayerMenuState extends State<PlayerMenu> {
             ),
           const SizedBox(height: 8),
         ],
+        if (all || widget.section == PlayerMenuSection.fit) ...[
+          const Text('画面比例'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final entry in fitTypeEntries)
+                ChoiceChip(
+                  key: ValueKey('menu-fit-${entry.key}'),
+                  label: Text(entry.label),
+                  selected: entry.key == preferences.fitType,
+                  onSelected: _busy
+                      ? null
+                      : (_) => _run(
+                          () => widget.onPreferences(
+                            preferences.copyWith(fitType: entry.key),
+                          ),
+                        ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (all) ...[
+          SwitchListTile.adaptive(
+            key: const ValueKey('player-slide-volume-brightness'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('滑动调节音量与亮度'),
+            subtitle: const Text('左侧上下滑调亮度，右侧上下滑调音量'),
+            value: preferences.slideVolumeBrightness,
+            onChanged: _busy
+                ? null
+                : (value) => _run(
+                    () => widget.onPreferences(
+                      preferences.copyWith(slideVolumeBrightness: value),
+                    ),
+                  ),
+          ),
+          SwitchListTile.adaptive(
+            key: const ValueKey('player-slide-fullscreen'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('中部滑动切换全屏'),
+            subtitle: const Text('播放器中三分之一区域上下滑动进入或退出全屏'),
+            value: preferences.slideFullscreen,
+            onChanged: _busy
+                ? null
+                : (value) => _run(
+                    () => widget.onPreferences(
+                      preferences.copyWith(slideFullscreen: value),
+                    ),
+                  ),
+          ),
+          SwitchListTile.adaptive(
+            key: const ValueKey('player-quick-double-tap'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('双击快进快退'),
+            subtitle: const Text('开启后双击左 / 右区域快退 / 快进；关闭后双击任意位置播放暂停'),
+            value: preferences.quickDoubleTap,
+            onChanged: _busy
+                ? null
+                : (value) => _run(
+                    () => widget.onPreferences(
+                      preferences.copyWith(quickDoubleTap: value),
+                    ),
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text('快进快退步长'),
+                for (final seconds in const [5, 10, 15, 30])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      key: ValueKey('menu-double-tap-$seconds'),
+                      label: Text('$seconds 秒'),
+                      selected: seconds == preferences.doubleTapSeekSeconds,
+                      onSelected: _busy
+                          ? null
+                          : (_) => _run(
+                              () => widget.onPreferences(
+                                preferences.copyWith(
+                                  doubleTapSeekSeconds: seconds,
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text('横滑进度幅度'),
+                for (final seconds in dragSeekSteps)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      key: ValueKey('menu-drag-seek-$seconds'),
+                      label: Text('$seconds 秒'),
+                      selected: seconds == preferences.dragSeekSeconds,
+                      onSelected: _busy
+                          ? null
+                          : (_) => _run(
+                              () => widget.onPreferences(
+                                preferences.copyWith(
+                                  dragSeekSeconds: seconds,
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text('长按倍速'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final speed in const [2.0, 2.5, 3.0, 4.0])
+                ChoiceChip(
+                  key: ValueKey('menu-long-press-speed-$speed'),
+                  label: Text('${speed}x'),
+                  selected: speed == preferences.longPressSpeed,
+                  onSelected: _busy
+                      ? null
+                      : (_) => _run(
+                          () => widget.onPreferences(
+                            preferences.copyWith(longPressSpeed: speed),
+                          ),
+                        ),
+                ),
+            ],
+          ),
+          SwitchListTile.adaptive(
+            key: const ValueKey('player-auto-long-press-speed'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('长按使用动态倍速'),
+            subtitle: const Text('开启后长按倍速为当前播放速度的 2 倍'),
+            value: preferences.autoLongPressSpeed,
+            onChanged: _busy
+                ? null
+                : (value) => _run(
+                    () => widget.onPreferences(
+                      preferences.copyWith(autoLongPressSpeed: value),
+                    ),
+                  ),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (all) ...[
           SwitchListTile.adaptive(
             key: const ValueKey('player-preload-enabled'),
@@ -314,8 +478,8 @@ class _PlayerMenuState extends State<PlayerMenu> {
           const SizedBox(height: 20),
           Text(
             widget.mobile
-                ? '上下滑切集；长按画面临时 3 倍速，松开恢复。竖屏轻点暂停，横屏轻点显示控制；双击播放或暂停。'
-                : '空格：播放 / 暂停\n左右键：后退 / 快进 5 秒\n长按右键或画面：临时 3 倍速\n上下键：音量 ±5%，M：静音\nF、F11、Ctrl+F：全屏\nEsc：先关闭菜单，再退出全屏',
+                ? '左侧上下滑调亮度，右侧上下滑调音量，中部上滑进入全屏、下滑退出全屏；左右滑动拖进度（一屏约 ${preferences.dragSeekSeconds} 秒），滑到顶部角落松开取消；双击快进快退关闭时，双击任意位置播放暂停；长按临时倍速，倍速中上滑锁定、下滑解锁。'
+                : '空格：播放 / 暂停\n左右键：后退 / 快进 5 秒\n长按右键或画面：临时倍速\n上下键：音量 ±5%，M：静音\nF、F11、Ctrl+F：全屏\nEsc：先关闭菜单，再退出全屏',
             style: helperStyle.copyWith(height: 1.6),
           ),
         ],

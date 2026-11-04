@@ -6,9 +6,57 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/html"
 )
+
+func parseYeguoDocument(t *testing.T, body string) *html.Node {
+	t.Helper()
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse document: %v", err)
+	}
+	return document
+}
+
+func TestYeguoAPIBaseFallsBackToBrandGateway(t *testing.T) {
+	document := parseYeguoDocument(t, `<html><body><script type="application/json" id="__NUXT_DATA__">[{"apiBaseURL":1},"https://analyze.buxefaex.cc/"]</script></body></html>`)
+	base, err := yeguoAPIBase(document, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != "https://analyze.buxefaex.cc" {
+		t.Fatalf("nuxt apiBaseURL was not used: %q", base)
+	}
+
+	legacy := parseYeguoDocument(t, `<html><body><script type="application/json" id="__NUXT_DATA__">[{"state":{"config":{}}}]</script></body></html>`)
+	base, err = yeguoAPIBase(legacy, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != yeguoGatewayURL {
+		t.Fatalf("missing apiBaseURL did not fall back to gateway: %q", base)
+	}
+
+	base, err = yeguoAPIBase(legacy, "https://custom.example.test/api.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != "https://custom.example.test/api.php" {
+		t.Fatalf("configured api base was not used: %q", base)
+	}
+
+	base, err = yeguoAPIBase(parseYeguoDocument(t, `<html></html>`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != yeguoGatewayURL {
+		t.Fatalf("page without nuxt data did not fall back to gateway: %q", base)
+	}
+}
 
 func TestYeguoAPIClientUsesRouteMethods(t *testing.T) {
 	var sawCategories, sawCatalog, sawSearch, sawPlay bool

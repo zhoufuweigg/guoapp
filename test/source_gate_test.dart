@@ -20,21 +20,34 @@ void main() {
     return store;
   }
 
-  test('default visibility hides restricted sources', () async {
+  test('default visibility shows every compiled source', () async {
     final store = await create();
     expect(store.sourceGateEnabled, isFalse);
-    expect(store.sourcesUnlocked, isFalse);
+    expect(store.sourcesUnlocked, isTrue);
     expect(
       store.sources.map((site) => site.id),
       allSourcesEnabled
-          ? ['hongguo', 'hanxiaoquan', 'guipian', 'sorani']
+          ? [
+              'hongguo',
+              'hanxiaoquan',
+              'guipian',
+              'sorani',
+              'huangdou',
+              'huangju',
+              'yeguo',
+              'dsd',
+              'huangguo-video',
+              'huangguoai',
+              'cloudfront',
+            ]
           : ['hongguo'],
     );
-    expect(store.allowsSource('huangdou'), isFalse);
+    expect(store.allowsSource('huangdou'), allSourcesEnabled);
     expect(store.allowsSource('hongguo'), isTrue);
-    // 未启用密码锁时无处输入密码，需要先在弹窗里启用。
+    // 未启用密码锁时敏感站源打开即用，无需任何解锁操作。
+    expect(store.sourceGateEnabled, isFalse);
     await expectLater(store.unlockSources('666'), throwsStateError);
-    expect(store.sourcesUnlocked, isFalse);
+    expect(store.sourcesUnlocked, isTrue);
   });
 
   test('enabling the gate hides restricted sources and unlocks once', () async {

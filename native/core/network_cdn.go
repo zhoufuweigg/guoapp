@@ -122,7 +122,8 @@ func (transport *cdnTransport) pinnedTransport(host string, proxyURL *url.URL, r
 	}
 	pinned := transport.base.Clone()
 	if pinned.TLSClientConfig == nil {
-		pinned.TLSClientConfig = &tls.Config{}
+		// 显式下限 TLS 1.2（Go 1.22 起默认值），避免依赖隐式默认并消除审计噪音。
+		pinned.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	pinned.TLSClientConfig.ServerName = host
 	pinned.Proxy = http.ProxyURL(proxyURL)

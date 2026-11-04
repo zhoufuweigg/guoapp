@@ -95,11 +95,9 @@ func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, strin
 	stream.sessions[token] = session
 	stream.mu.Unlock()
 	entry := nativeStreamAsset{address: media.URL, contentType: "video/mp4"}
-	isHLS := media.Playlist != "" || len(media.HLSKey) > 0 || strings.Contains(strings.ToLower(media.URL), "m3u8") || strings.Contains(strings.ToLower(media.URL), "hls")
+	parsedURL, parseErr := url.Parse(media.URL)
+	isHLS := media.Playlist != "" || (parseErr == nil && strings.HasSuffix(strings.ToLower(parsedURL.Path), ".m3u8"))
 	if isHLS {
-		entry.contentType = "application/vnd.apple.mpegurl"
-	}
-	if parsed, err := url.Parse(media.URL); err == nil && strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") {
 		entry.contentType = "application/vnd.apple.mpegurl"
 	}
 	if media.Playlist != "" {
@@ -214,6 +212,29 @@ func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStr
 	return strings.Join(output, "\n"), nil
 }
 
+// nativeProbePlaylist 用一次 512 字节的 Range 请求判断上游是否为 HLS 播放列表。
+// 仅在 HEAD 请求且响应类型无法判定时使用（HEAD 没有响应体，无法直接嗅探）。
+func (stream *nativeStreamServer) nativeProbePlaylist(ctx context.Context, session *nativeStreamSession, address string) bool {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return false
+	}
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Referer", session.referer)
+	request.Header.Set("Range", "bytes=0-511")
+	response, err := stream.nativeRequest(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	peek, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+	text := strings.TrimSpace(strings.TrimPrefix(string(peek), "\ufeff"))
+	return strings.HasPrefix(text, "#EXTM3U")
+}
+
 func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
@@ -301,12 +322,28 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	if response.Request != nil && response.Request.URL != nil {
 		finalURL = response.Request.URL
 	}
-	playlist := strings.Contains(asset.contentType, "mpegurl") || strings.Contains(contentType, "mpegurl") || strings.HasSuffix(strings.ToLower(finalURL.Path), ".m3u8") || strings.Contains(strings.ToLower(finalURL.String()), "m3u8") || len(session.key) > 0
+	contentIsMP4 := strings.Contains(contentType, "video/mp4")
+	playlist := strings.Contains(contentType, "mpegurl") ||
+		(strings.HasSuffix(strings.ToLower(finalURL.Path), ".m3u8") && !contentIsMP4)
 	reader := bufio.NewReader(response.Body)
-	if !playlist && request.Method == http.MethodGet {
+	if request.Method == http.MethodGet {
 		peek, _ := reader.Peek(512)
-		if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(string(peek), "\ufeff")), "#EXTM3U") {
+		bodyIsPlaylist := strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(string(peek), "\ufeff")), "#EXTM3U")
+		// HLS 规范要求文件以 #EXTM3U 开头，因此嗅探结果优先于 Content-Type：
+		// 既避免 CDN 把 MP4 误标成 mpegurl 时仍按播放列表读取，也兼容播放列表被标成 octet-stream。
+		if bodyIsPlaylist {
 			playlist = true
+		} else if len(peek) > 0 {
+			playlist = false
+		}
+	}
+	if request.Method == http.MethodHead && !playlist &&
+		(contentType == "" || strings.Contains(contentType, "octet-stream") || strings.Contains(contentType, "text/plain")) {
+		// HEAD 没有响应体，只能补一次 512 字节的 Range 探测。
+		if stream.nativeProbePlaylist(ctx, session, asset.address) {
+			playlist = true
+		} else if contentIsMP4 {
+			playlist = false
 		}
 	}
 	if playlist && request.Method == http.MethodHead {
@@ -341,6 +378,17 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	}
 	writer.WriteHeader(response.StatusCode)
 	if request.Method == http.MethodGet {
-		_, _ = io.Copy(writer, reader)
+		// 用更大的缓冲向上游取数据，减少小包写入次数，提升弱网下的吞吐。
+		pointer := nativeStreamCopyPool.Get().(*[]byte)
+		// 屏蔽 src 的 WriteTo 与 dst 的 ReaderFrom，确保使用上面的大缓冲。
+		_, _ = io.CopyBuffer(struct{ io.Writer }{writer}, struct{ io.Reader }{reader}, *pointer)
+		nativeStreamCopyPool.Put(pointer)
 	}
 }
+
+const nativeStreamCopyBuffer = 128 << 10
+
+var nativeStreamCopyPool = sync.Pool{New: func() any {
+	buffer := make([]byte, nativeStreamCopyBuffer)
+	return &buffer
+}}

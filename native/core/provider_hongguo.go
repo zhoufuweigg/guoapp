@@ -16,6 +16,33 @@ import (
 
 const hongguoBaseURL = "https://hongguoduanju.com"
 
+/// 红果 App 接口失败时，二级分类对应的网页回退路由。
+///
+/// App 侧按 genre（short_play/comic_series/ai_series）取流，网页侧按
+/// 分类页路由取流，两者内容同源；「全部」聚合三条路由。
+type hongguoWebRoute struct {
+	path string
+	name string
+}
+
+func hongguoWebFallbackRoutes(category string) []hongguoWebRoute {
+	switch category {
+	case "":
+		return []hongguoWebRoute{
+			{path: "real-drama", name: "真人剧"},
+			{path: "comic-drama", name: "漫剧"},
+			{path: "ai-drama", name: "AI剧"},
+		}
+	case "short_play":
+		return []hongguoWebRoute{{path: "real-drama", name: "真人剧"}}
+	case "comic_series":
+		return []hongguoWebRoute{{path: "comic-drama", name: "漫剧"}}
+	case "ai_series":
+		return []hongguoWebRoute{{path: "ai-drama", name: "AI剧"}}
+	}
+	return nil
+}
+
 func (d *Downloader) fetchHongguoDramas(ctx context.Context) ([]Drama, error) {
 	initialized := hongguoCatalogInitialized(d.hongguoCatalogSnapshot())
 	dramas, appErr := d.fetchHongguoAppCatalog(ctx)

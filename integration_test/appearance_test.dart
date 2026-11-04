@@ -58,9 +58,8 @@ void main() {
     await capture('appearance-system-home');
     await tester.tap(find.byKey(const ValueKey('bottom-nav-1')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('更多'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('设置与备份'));
+    // 设置已互换到底栏最右侧（三点菜单中原「设置与备份」位置改为「下载」）。
+    await tester.tap(find.byKey(const ValueKey('bottom-nav-3')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('theme-setting')));
     await tester.pumpAndSettle();

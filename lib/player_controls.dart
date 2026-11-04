@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
-import 'app_layout.dart';
 import 'lan_controller.dart';
+import 'playback_preferences.dart';
 import 'player_interactions.dart';
 import 'widgets.dart';
 import 'video_enhancement.dart';
@@ -38,8 +38,10 @@ class PlayerControls extends StatefulWidget {
     this.onDanmaku,
     this.onRetryDanmaku,
     this.onPush,
-    this.onPictureInPicture,
     this.enhancement,
+    this.gestureOptions = const PlayerGestureOptions(),
+    this.fitType = 'contain',
+    this.onFitType,
   });
 
   final Player player;
@@ -68,8 +70,10 @@ class PlayerControls extends StatefulWidget {
   final Future<void> Function()? onDanmaku;
   final Future<void> Function()? onRetryDanmaku;
   final Future<void> Function()? onPush;
-  final Future<void> Function()? onPictureInPicture;
   final VideoEnhancementController? enhancement;
+  final PlayerGestureOptions gestureOptions;
+  final String fitType;
+  final Future<void> Function()? onFitType;
 
   @override
   State<PlayerControls> createState() => _PlayerControlsState();
@@ -81,7 +85,15 @@ class _PlayerControlsState extends State<PlayerControls> {
   bool _visible = true;
   bool _suppressAutoPlaybackStart = false;
   bool _lastPlaying = false;
+  bool _wasBoosting = false;
+  bool _visibleBeforeBoost = false;
+  bool _justBoosted = false;
   double? _seekValue;
+
+  bool _flashBackward = false;
+  bool _flashForward = false;
+  int _flashSeconds = 0;
+  Timer? _flashTimer;
 
   @override
   void initState() {
@@ -155,7 +167,38 @@ class _PlayerControlsState extends State<PlayerControls> {
   }
 
   void _interactionChanged() {
-    if (mounted && widget.interactions.feedback.isNotEmpty) _show();
+    if (!mounted) return;
+    final boosting = widget.interactions.boosting;
+    if (boosting) {
+      if (!_wasBoosting) {
+        // 倍速起始瞬间：记录进入前的显隐状态并隐藏控件（仅捕获一次，
+        // 后续倍速相关的通知不得覆盖该状态）
+        _wasBoosting = true;
+        _justBoosted = false;
+        _hideTimer?.cancel();
+        _visibleBeforeBoost = _visible;
+        if (_visible) setState(() => _visible = false);
+      }
+      return;
+    }
+    if (_wasBoosting) {
+      // 倍速结束：恢复进入倍速前的控件显隐状态（此前已隐藏则保持隐藏）
+      _wasBoosting = false;
+      _justBoosted = true;
+      if (_visibleBeforeBoost) {
+        _visibleBeforeBoost = false;
+        _show();
+      }
+      if (widget.interactions.feedback.isEmpty) _justBoosted = false;
+      return;
+    }
+    if (_justBoosted) {
+      // 倍速刚结束时的 transient 提示（如「恢复 1 倍速」）不弹出控件，
+      // 提示清空后恢复「有反馈即显示」的原有行为
+      if (widget.interactions.feedback.isEmpty) _justBoosted = false;
+      return;
+    }
+    if (widget.interactions.feedback.isNotEmpty) _show();
   }
 
   void _scheduleHide() {
@@ -181,6 +224,8 @@ class _PlayerControlsState extends State<PlayerControls> {
 
   void _show() {
     if (!mounted) return;
+    // 倍速进行中不响应任何显隐请求，控件保持隐藏
+    if (widget.interactions.boosting) return;
     if (!_visible) setState(() => _visible = true);
     _scheduleHide();
   }
@@ -190,6 +235,56 @@ class _PlayerControlsState extends State<PlayerControls> {
     widget.onFocusSurface();
     setState(() => _visible = !_visible);
     _scheduleHide();
+  }
+
+  void _doubleTapDown(TapDownDetails details) {
+    if (!widget.enabled || widget.interactions.suppressTap) return;
+    if (!widget.gestureOptions.quickDoubleTap) {
+      widget.onTogglePlayback();
+      _show();
+      return;
+    }
+    final width = MediaQuery.sizeOf(context).width;
+    final dx = details.localPosition.dx;
+    final sectionWidth = width / 4;
+    if (dx < sectionWidth) {
+      _startFlash(false);
+    } else if (dx < sectionWidth * 3) {
+      widget.onTogglePlayback();
+      _show();
+    } else {
+      _startFlash(true);
+    }
+  }
+
+  void _startFlash(bool forward) {
+    final step = widget.gestureOptions.doubleTapSeekSeconds;
+    setState(() {
+      if (forward) {
+        _flashForward = true;
+        _flashBackward = false;
+      } else {
+        _flashBackward = true;
+        _flashForward = false;
+      }
+      _flashSeconds += step;
+    });
+    _flashTimer?.cancel();
+    _flashTimer = Timer(const Duration(milliseconds: 500), _submitFlash);
+  }
+
+  void _submitFlash() {
+    _flashTimer?.cancel();
+    _flashTimer = null;
+    final seconds = _flashSeconds;
+    final forward = _flashForward;
+    if (seconds <= 0) return;
+    setState(() {
+      _flashForward = false;
+      _flashBackward = false;
+      _flashSeconds = 0;
+    });
+    widget.interactions.seek(forward ? seconds : -seconds);
   }
 
   Future<void> _panel(Future<void> Function() open) async {
@@ -202,6 +297,7 @@ class _PlayerControlsState extends State<PlayerControls> {
   @override
   void dispose() {
     _hideTimer?.cancel();
+    _flashTimer?.cancel();
     widget.interactions.removeListener(_interactionChanged);
     for (final subscription in _subscriptions) {
       subscription.cancel();
@@ -242,13 +338,7 @@ class _PlayerControlsState extends State<PlayerControls> {
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _tap,
-                onDoubleTap: () {
-                  if (!widget.enabled || widget.interactions.suppressTap) {
-                    return;
-                  }
-                  widget.onTogglePlayback();
-                  _show();
-                },
+                onDoubleTapDown: _doubleTapDown,
               ),
             ),
             if (state.buffering && widget.enabled)
@@ -256,6 +346,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                 child: Center(child: CircularProgressIndicator()),
               ),
             IgnorePointer(
+              key: const ValueKey('player-controls-chrome'),
               ignoring: !visible,
               child: ExcludeFocus(
                 excluding: !visible,
@@ -300,7 +391,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                             _sideDanmakuControl(),
                             _bottomControls(
                               constraints: constraints,
-                              volume: state.volume,
+                              volume: widget.interactions.volume * 100,
                               duration: duration,
                               position: position,
                               buffered: buffered,
@@ -314,6 +405,7 @@ class _PlayerControlsState extends State<PlayerControls> {
               ),
             ),
             _gestureFeedback(),
+            _seekFlashLayer(),
           ],
         ),
       ),
@@ -775,6 +867,14 @@ class _PlayerControlsState extends State<PlayerControls> {
           onPressed: widget.enabled ? () => _panel(widget.onEpisodes) : null,
         ),
       if (showCompare) _enhancementCompareButton(),
+      if (widget.onFitType != null)
+        _toolText(
+          key: const ValueKey('player-fit-type'),
+          tooltip: '画面比例',
+          label: fitTypeLabels[widget.fitType] ?? '自动',
+          onPressed: widget.enabled ? () => _panel(widget.onFitType!) : null,
+          width: 44,
+        ),
       if (showVolume)
         _toolIcon(
           key: const ValueKey('player-volume'),
@@ -784,15 +884,6 @@ class _PlayerControlsState extends State<PlayerControls> {
               : Icons.volume_up_rounded,
           onPressed: widget.enabled
               ? () => _panel(() => _openVolume(volume))
-              : null,
-        ),
-      if (widget.onPictureInPicture != null)
-        _toolIcon(
-          key: const ValueKey('player-picture-in-picture'),
-          tooltip: '画中画',
-          icon: Icons.picture_in_picture_alt_rounded,
-          onPressed: widget.enabled
-              ? () => _panel(widget.onPictureInPicture!)
               : null,
         ),
       _toolIcon(
@@ -835,14 +926,13 @@ class _PlayerControlsState extends State<PlayerControls> {
           icon: Icons.grid_view_rounded,
           onPressed: widget.enabled ? () => _panel(widget.onEpisodes) : null,
         ),
-      if (widget.onPictureInPicture != null)
-        _toolIcon(
-          key: const ValueKey('player-picture-in-picture'),
-          tooltip: '画中画',
-          icon: Icons.picture_in_picture_alt_rounded,
-          onPressed: widget.enabled
-              ? () => _panel(widget.onPictureInPicture!)
-              : null,
+      if (widget.onFitType != null)
+        _toolText(
+          key: const ValueKey('player-fit-type'),
+          tooltip: '画面比例',
+          label: fitTypeLabels[widget.fitType] ?? '自动',
+          onPressed: widget.enabled ? () => _panel(widget.onFitType!) : null,
+          width: 44,
         ),
     ];
     return Padding(
@@ -888,7 +978,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                             onPressed: () {
                               final next = volume == 0 ? 100.0 : 0.0;
                               setState(() => volume = next);
-                              unawaited(widget.player.setVolume(next));
+                              widget.interactions.setVolumeFraction(next / 100);
                             },
                             icon: Icon(
                               volume == 0
@@ -919,7 +1009,9 @@ class _PlayerControlsState extends State<PlayerControls> {
                                   divisions: 20,
                                   onChanged: (value) {
                                     setState(() => volume = value);
-                                    unawaited(widget.player.setVolume(value));
+                                    widget.interactions.setVolumeFraction(
+                                      value / 100,
+                                    );
                                   },
                                 ),
                               ),
@@ -992,84 +1084,293 @@ class _PlayerControlsState extends State<PlayerControls> {
     builder: (context, _) {
       final hud = widget.interactions.hudState;
       final feedback = widget.interactions.feedback;
-      if (hud.type == SwipeAction.brightness) {
-        final value = hud.value.clamp(0.0, 1.0);
-        final percent = (value * 100).round();
-        final icon = value < 0.33
-            ? Icons.brightness_low_rounded
-            : value < 0.66
-                ? Icons.brightness_medium_rounded
-                : Icons.brightness_high_rounded;
-        return IgnorePointer(
-          child: Center(
-            child: Container(
-              width: 120,
-              padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: .75),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withValues(alpha: .15), width: 1),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: .4),
-                    blurRadius: 18,
-                    spreadRadius: 2,
+      final lockHint = widget.interactions.speedLockHint;
+      final children = <Widget>[];
+
+      if (hud.isBrightness) {
+        children.add(_verticalHud(
+          alignment: Alignment.centerLeft,
+          icon: hud.value < 0.33
+              ? Icons.brightness_low_rounded
+              : hud.value < 0.66
+                  ? Icons.brightness_medium_rounded
+                  : Icons.brightness_high_rounded,
+          percent: (hud.value.clamp(0.0, 1.0) * 100).round(),
+          fraction: hud.value.clamp(0.0, 1.0),
+        ));
+      }
+
+      if (hud.isVolume) {
+        children.add(_verticalHud(
+          alignment: Alignment.centerRight,
+          icon: hud.value <= 0.001
+              ? Icons.volume_off_rounded
+              : hud.value < 0.5
+                  ? Icons.volume_down_rounded
+                  : Icons.volume_up_rounded,
+          percent: (hud.value * 100).round(),
+          fraction: hud.value.clamp(0.0, 1.0),
+        ));
+      }
+
+      if (hud.isSeek) {
+        if (hud.cancelSeek) {
+          children.add(
+            IgnorePointer(
+              child: Center(
+                child: _hudPill(
+                  child: const Text(
+                    '松开手指，取消进退',
+                    style: TextStyle(fontSize: 13, color: Colors.white),
                   ),
-                ],
+                ),
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, color: Colors.white, size: 36),
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    width: 70,
-                    height: 6,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(3),
-                      child: LinearProgressIndicator(
-                        value: value,
-                        backgroundColor: Colors.white24,
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          );
+        } else {
+          final delta = hud.seekDelta;
+          children.add(
+            IgnorePointer(
+              child: Align(
+                alignment: const Alignment(0, -0.55),
+                child: _hudPill(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        formatPosition(hud.seekTarget.inSeconds.toDouble()),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${delta > 0 ? '+' : ''}$delta 秒',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withValues(alpha: .85),
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+      }
+
+      if (widget.interactions.boosting) {
+        final hintText = switch (lockHint) {
+          SpeedLockHint.swipeUpToLock => '${_boostLabel()} 倍速中 · 上滑锁定',
+          SpeedLockHint.releaseToLock => '松手锁定倍速',
+          SpeedLockHint.swipeDownToUnlock => '${_boostLabel()} 倍速锁定 · 下滑解锁',
+          SpeedLockHint.releaseToUnlock => '松手解除锁定',
+          _ => '${_boostLabel()} 倍速中',
+        };
+        children.add(
+          IgnorePointer(
+            child: Align(
+              alignment: const Alignment(0, -0.72),
+              child: _hudPill(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.interactions.speedLocked
+                          ? Icons.lock_rounded
+                          : Icons.lock_open_rounded,
+                      size: 16,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      hintText,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '亮度 $percent%',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      } else if (lockHint == SpeedLockHint.lockedConfirm ||
+          lockHint == SpeedLockHint.unlockedConfirm) {
+        children.add(
+          IgnorePointer(
+            child: Align(
+              alignment: const Alignment(0, -0.72),
+              child: _hudPill(
+                child: Text(
+                  lockHint == SpeedLockHint.lockedConfirm
+                      ? '已锁定 ${_boostLabel()} 倍速'
+                      : '已解除倍速锁定',
+                  style: const TextStyle(fontSize: 13, color: Colors.white),
+                ),
               ),
             ),
           ),
         );
       }
-      if (feedback.isEmpty) return const SizedBox.shrink();
-      return IgnorePointer(
-        child: Align(
-          alignment: const Alignment(0, -.5),
-          child: Container(
-            margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.black87,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white12),
-            ),
-            child: Text(
-              feedback,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+
+      if (feedback.isNotEmpty && !hud.isSeek && !widget.interactions.boosting) {
+        children.add(
+          IgnorePointer(
+            child: Align(
+              alignment: const Alignment(0, -.5),
+              child: Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Text(
+                  feedback,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
             ),
           ),
-        ),
-      );
+        );
+      }
+
+      if (children.isEmpty) return const SizedBox.shrink();
+      return Stack(fit: StackFit.expand, children: children);
     },
+  );
+
+  String _boostLabel() {
+    if (widget.gestureOptions.autoLongPressSpeed) {
+      return '${widget.player.state.rate}';
+    }
+    return '${widget.gestureOptions.longPressSpeed}';
+  }
+
+  Widget _hudPill({required Widget child, EdgeInsets? padding}) => Container(
+    margin: const EdgeInsets.all(16),
+    padding: padding ?? const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: .78),
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: Colors.white.withValues(alpha: .14)),
+    ),
+    child: child,
+  );
+
+  Widget _verticalHud({
+    required Alignment alignment,
+    required IconData icon,
+    required int percent,
+    required double fraction,
+  }) => IgnorePointer(
+    child: Align(
+      alignment: alignment,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 18, vertical: 60),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: .75),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: Colors.white.withValues(alpha: .14)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 26),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: 5,
+              height: 108,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: ColoredBox(
+                  color: Colors.white24,
+                  child: FractionallySizedBox(
+                    alignment: Alignment.bottomCenter,
+                    heightFactor: fraction.clamp(0.0, 1.0),
+                    child: const ColoredBox(color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '$percent%',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _seekFlashLayer() {
+    if (!_flashBackward && !_flashForward) return const SizedBox.shrink();
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Row(
+          children: [
+            if (_flashBackward)
+              Expanded(child: _seekFlash(false, _flashSeconds)),
+            if (!_flashBackward && !_flashForward) const Spacer(flex: 2),
+            if (_flashForward)
+              Expanded(child: _seekFlash(true, _flashSeconds)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _seekFlash(bool forward, int seconds) => DecoratedBox(
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        colors: forward
+            ? const [Color(0x00767676), Color(0x66767676)]
+            : const [Color(0x66767676), Color(0x00767676)],
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+      ),
+    ),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          forward ? Icons.fast_forward_rounded : Icons.fast_rewind_rounded,
+          size: 26,
+          color: Colors.white,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '${forward ? '快进' : '快退'} $seconds 秒',
+          style: const TextStyle(fontSize: 12, color: Colors.white),
+        ),
+      ],
+    ),
   );
 }

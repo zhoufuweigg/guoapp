@@ -24,12 +24,14 @@ class LocalSnapshot {
     'lanRecords',
     'lanSettings',
     'lanReceipts',
+    'catalogProgress',
   };
   static const globalKeys = {
     'profiles',
     'activeProfile',
     'displayMode',
     'themeMode',
+    'themeAppearance',
     'autoExport',
     'exportPosters',
     'sourceGateEnabled',
@@ -45,7 +47,7 @@ class LocalSnapshot {
       globalKeys.contains(key) ||
       libraryKeys.contains(key) ||
       RegExp(
-        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|seriesCandidates|mediaHistory|source|hideVip|playback|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts)$',
+        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|seriesCandidates|mediaHistory|source|hideVip|playback|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts|catalogProgress)$',
       ).hasMatch(key);
 
   Map<String, Object> get values => Map.of(_values);

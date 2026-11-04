@@ -48,6 +48,7 @@ type Downloader struct {
 	rankings              rankingCache
 	cfg                   Config
 	client                *http.Client
+	playbackClient        *http.Client // 禁用 HTTP/2 的备用通道（见 provider_hongguo_playback.go）
 	huangdouDetails       map[string]huangdouDetailEntry
 	huangdouDetailPending map[string]*huangdouDetailCall
 	providerMu            sync.Mutex
@@ -177,6 +178,8 @@ type nativeEngine struct {
 	sourceRecords    map[string]nativeSourceRecord
 	sourceCatalogMu  sync.Mutex
 	sourceCatalogs   map[string]chan struct{}
+	routeLatencyMu   sync.Mutex
+	routeLatencies   map[string]routeLatencyEntry
 }
 
 var nativeState struct {
@@ -265,6 +268,13 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	transport.MaxIdleConnsPerHost = 8
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
+	// 备用取流通道（djapi 等第三方代理）单独走一个禁用 HTTP/2 的客户端：
+	// 部分代理服务端不协商 ALPN，标准客户端强制 h2 会报
+	// “tls: no application protocol”，回退到纯 HTTP/1.1 即可正常握手。
+	playbackTransport := transport.Clone()
+	playbackTransport.ForceAttemptHTTP2 = false
+	playbackTransport.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+	d.playbackClient = &http.Client{Transport: playbackTransport, Timeout: 45 * time.Second}
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
 	d.client = &http.Client{Transport: newHuangguoBrowserTransport(cdn, d), Timeout: 45 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
@@ -276,7 +286,7 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 			}
 			return nil
 		}}
-	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
+	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}, routeLatencies: map[string]routeLatencyEntry{}}
 	engine.loadResourceSettings()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
@@ -635,10 +645,38 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		if category != "" && state != nil {
 			result.HasMore = !state.Feeds["category:"+category].Exhausted
 		}
-		if len(items) == 0 && err != nil && ctx.Err() == nil && (category == "" || category == "short_play") {
-			var totalPages int
-			items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
-			result.HasMore = page < totalPages
+		if len(items) == 0 && err != nil && ctx.Err() == nil {
+			// App 接口失败（空响应 / 风控）时按分类回退到网页版分类页
+			if routes := hongguoWebFallbackRoutes(category); len(routes) > 0 {
+				seen := map[string]bool{}
+				merged := make([]Drama, 0, len(items))
+				var totalPages int
+				var failures []error
+				for _, route := range routes {
+					pageItems, pages, routeErr := d.fetchHongguoCategoryPage(ctx, route.path+"?page="+strconv.Itoa(page), route.name)
+					if pages > totalPages {
+						totalPages = pages
+					}
+					if routeErr != nil {
+						failures = append(failures, routeErr)
+					}
+					for _, drama := range pageItems {
+						if !seen[drama.ID] {
+							seen[drama.ID] = true
+							merged = append(merged, drama)
+						}
+					}
+				}
+				items = merged
+				if len(items) > 0 {
+					// 有路由成功：仅提示失败的路由，正常返回结果
+					err = errors.Join(failures...)
+				} else {
+					// 全部失败：附上 App 侧原始错误便于定位
+					err = errors.Join(append([]error{err}, failures...)...)
+				}
+				result.HasMore = page < totalPages
+			}
 		}
 	case sourceHuangdou:
 		client := newHuangdouAPIClient(d)
@@ -787,6 +825,16 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 	choice := nativePlaybackChoices(media, input.Quality)
 	if series, video, valid := hongguoPlaybackIDs(task); valid {
 		choice.danmakuSeries, choice.danmakuVideo = series, video
+	}
+	engine.nativeRankRoutes(&choice)
+	if len(choice.media) > 1 {
+		if _, ok := engine.routeLatency(nativeRouteKey(choice.media[0])); ok {
+			go engine.probeRoutes(choice, 0)
+		} else {
+			// 首次播放还没有测速结果，先花一小段时间并发探测各线路，再挑最快的起播。
+			engine.probeRoutes(choice, routeProbeBudget)
+			engine.nativeRankRoutes(&choice)
+		}
 	}
 	return engine.nativeOpenPlayback(ctx, choice)
 }

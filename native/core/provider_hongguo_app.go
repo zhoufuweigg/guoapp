@@ -176,6 +176,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		request.Header.Set("Sdk-Version", "2")
 		comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 		var commentNonce hongguoCommentNonce
+		var playerNonce hongguoPlayerNonce
 		if comment {
 			commentNonce, err = newHongguoCommentNonce()
 			if err != nil {
@@ -183,6 +184,11 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			}
 			request.Header.Set("Comment-Source", "601")
 			request.Header.Set("Server-Channel", "1000")
+		} else {
+			playerNonce, err = newHongguoPlayerNonce()
+			if err != nil {
+				return nil, errors.New("无法准备红果请求签名随机数")
+			}
 		}
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
@@ -194,7 +200,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			if comment {
 				signHongguoCommentRequest(prepared, commentNonce, now)
 			} else {
-				signHongguoRequest(prepared, body, now)
+				signHongguoPlayerRequest(prepared, body, now, installID, playerNonce)
 			}
 		})
 		if err != nil {
@@ -229,6 +235,11 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode"))
 		if code != "" && code != "0" {
+			// 服务端 message 往往携带被拒原因（签名失效 / 风控 / 频控），必须透出。
+			message := firstNonEmpty(mapString(result, "message", "msg"), mapString(nestedMap(result, "BaseResp"), "StatusMessage"), mapString(nestedMap(result, "data"), "message"))
+			if message != "" {
+				return nil, fmt.Errorf("红果 App 接口暂不可用（%s）：%s", truncate(code, 20), truncate(message, 120))
+			}
 			return nil, fmt.Errorf("红果 App 接口暂不可用（%s）", truncate(code, 20))
 		}
 		return result, nil

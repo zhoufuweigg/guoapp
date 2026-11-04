@@ -30,6 +30,7 @@ import (
 
 const (
 	yeguoBaseURL    = "https://analyze.buxefaex.cc"
+	yeguoGatewayURL = "https://www.yeguodj.com/api.php"
 	yeguoTransitURL = "https://ygdj7.com"
 )
 
@@ -328,6 +329,9 @@ func yeguoAPIBase(document *html.Node, configured string) (string, error) {
 					break
 				}
 			}
+		}
+		if base == "" {
+			base = yeguoGatewayURL
 		}
 	}
 	address, err := url.Parse(base)

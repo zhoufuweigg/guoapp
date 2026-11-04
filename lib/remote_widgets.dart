@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
-import 'search_input.dart';
 import 'package:flutter/services.dart';
 
 class RemoteTarget extends StatefulWidget {

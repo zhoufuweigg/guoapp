@@ -1,17 +1,16 @@
 name: duanju_app
 description: 独立运行的多端短剧应用
 publish_to: none
-version: 0.2.64+71
+version: 0.2.76+83
 
 environment:
-  sdk: '>=3.12.0 <4.0.0'
+  sdk: '>=3.13.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  video_player: ^2.9.2
   ffi: ^2.2.0
   media_kit: 1.2.6
   media_kit_video: 2.0.1
@@ -42,5 +41,7 @@ flutter:
   config:
     enable-swift-package-manager: false
   uses-material-design: true
+  shaders:
+    - shaders/liquid_glass.frag
   assets:
     - assets/video_enhancement/

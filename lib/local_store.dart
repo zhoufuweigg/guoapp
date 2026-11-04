@@ -7,7 +7,9 @@ import 'local_profiles.dart';
 import 'local_snapshot.dart';
 import 'models.dart';
 import 'playback_preferences.dart';
+import 'theme_appearance.dart';
 import 'download_preferences.dart';
+import 'catalog_progress.dart';
 import 'catalog_sort.dart';
 import 'follow_state.dart';
 import 'hongguo_series.dart';
@@ -137,9 +139,10 @@ class LocalStore extends ChangeNotifier {
       SourceSite.isAvailable(source) &&
       profile.allows(source) &&
       (_gateOff || _sourcesUnlocked || SourceSite.isPrimary(source));
-  List<SourceSite> get sources => SourceSite.visibleValues(
-    unlocked: _gateOff || _sourcesUnlocked,
-  ).where((site) => allowsSource(site.id)).toList();
+  List<SourceSite> get sources =>
+      SourceSite.visibleValues(unlocked: _gateOff || _sourcesUnlocked)
+          .where((site) => allowsSource(site.id))
+          .toList();
 
   /// 默认隐藏的站源是否已解锁。解锁状态只在本次运行内有效，重启后恢复隐藏。
   bool get sourcesUnlocked => _gateOff || _sourcesUnlocked;
@@ -162,7 +165,8 @@ class LocalStore extends ChangeNotifier {
         RegExp(r'^[a-f0-9]{32}$').hasMatch(salt) &&
         RegExp(r'^[a-f0-9]{64}$').hasMatch(hash);
     _gateEnabled = valid;
-    _gateOff = !valid && off;
+    // 未设置密码（含全新安装）时默认展示全部站源；设置密码后才启用隐藏。
+    _gateOff = !valid && (off || !enabled);
     _gateSalt = valid ? salt : '';
     _gateHash = valid ? hash : '';
     _sourcesUnlocked = false;
@@ -368,6 +372,21 @@ class LocalStore extends ChangeNotifier {
     return {'light', 'dark', 'system'}.contains(value) ? value! : 'system';
   }
 
+  ThemeAppearance get themeAppearance {
+    if (_configurationError != null) return const ThemeAppearance();
+    final raw = _string('themeAppearance');
+    if (raw == null || raw.isEmpty) return const ThemeAppearance();
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return ThemeAppearance.fromJson(decoded);
+      }
+    } catch (_) {
+      // 配置损坏时回退到默认外观，不影响启动。
+    }
+    return const ThemeAppearance();
+  }
+
   bool get autoExport => !locked && (_bool('autoExport') ?? false);
   bool get exportPosters => !locked && (_bool('exportPosters') ?? false);
   String get source {
@@ -412,6 +431,66 @@ class LocalStore extends ChangeNotifier {
     } catch (_) {
       return const CatalogView();
     }
+  }
+
+  /// 各站源目录的浏览断点（key：`源分组id:二级分类id`，每源每分类各一条）。
+  Map<String, CatalogProgress> get catalogProgress {
+    if (locked) return const {};
+    try {
+      final raw = jsonDecode(_string(_key('catalogProgress')) ?? '{}') as Map;
+      final result = <String, CatalogProgress>{};
+      raw.forEach((key, value) {
+        if (key is! String || key.length > 128) return;
+        final progress = CatalogProgress.fromJson(value);
+        if (progress != null) result[key] = progress;
+      });
+      return result;
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// 保存（progress 为 null 时删除）某个「源 + 分类」的浏览断点。
+  Future<void> saveCatalogProgress(String key, CatalogProgress? progress) {
+    if (locked || key.isEmpty || key.length > 128) return Future.value();
+    final epoch = _epoch;
+    return _queue(() async {
+      if (locked || epoch != _epoch) return;
+      final current = catalogProgress;
+      if (progress == null) {
+        if (!current.containsKey(key)) return;
+        current.remove(key);
+      } else {
+        current[key] = progress;
+      }
+      // 条目上限防御：超出时丢弃最旧的断点
+      while (current.length > catalogProgressMaxEntries) {
+        String? oldestKey;
+        var oldest = 1 << 62;
+        current.forEach((entry, value) {
+          if (value.updatedAt < oldest) {
+            oldest = value.updatedAt;
+            oldestKey = entry;
+          }
+        });
+        if (oldestKey == null) break;
+        current.remove(oldestKey);
+      }
+      await _commit({_key('catalogProgress'): jsonEncode(current)});
+      _notify();
+    });
+  }
+
+  /// 清除全部浏览断点。
+  Future<void> clearCatalogProgress() {
+    if (locked) return Future.value();
+    final epoch = _epoch;
+    return _queue(() async {
+      if (locked || epoch != _epoch) return;
+      if (catalogProgress.isEmpty) return;
+      await _commit({_key('catalogProgress'): '{}'});
+      _notify();
+    });
   }
 
   List<String> get recentSearches {
@@ -541,6 +620,12 @@ class LocalStore extends ChangeNotifier {
       {'light', 'dark', 'system'}.contains(value)
       ? _setting('themeMode', value)
       : Future.value();
+
+  Future<void> setThemeAppearance(ThemeAppearance value) {
+    ThemeAppearance.fromJson(value.toJson());
+    return _setting('themeAppearance', jsonEncode(value.toJson()));
+  }
+
   Future<void> setPlaybackPreferences(PlaybackPreferences value) {
     PlaybackPreferences.fromJson(value.toJson());
     return _setting(_key('playback'), jsonEncode(value.toJson()));
@@ -1019,6 +1104,9 @@ class LocalStore extends ChangeNotifier {
             'recentSearches': jsonDecode(
               _string(_key('recentSearches', profile.id)) ?? '[]',
             ),
+            'catalogProgress': jsonDecode(
+              _string(_key('catalogProgress', profile.id)) ?? '{}',
+            ),
           },
       },
     });
@@ -1098,6 +1186,16 @@ class LocalStore extends ChangeNotifier {
           )) {
         throw const FormatException('备份搜索记录无效');
       }
+      final progress = library['catalogProgress'] as Map? ?? {};
+      if (progress.length > catalogProgressMaxEntries ||
+          progress.keys.any((key) => key is! String || key.length > 128)) {
+        throw const FormatException('备份浏览进度无效');
+      }
+      for (final row in progress.values) {
+        if (CatalogProgress.fromJson(row) == null) {
+          throw const FormatException('备份浏览进度无效');
+        }
+      }
     }
     return data;
   }
@@ -1152,6 +1250,9 @@ class LocalStore extends ChangeNotifier {
         _key('recentSearches', profile.id): jsonEncode(
           library['recentSearches'] ?? [],
         ),
+        _key('catalogProgress', profile.id): jsonEncode(
+          library['catalogProgress'] ?? {},
+        ),
       });
     }
     await _commit(values, replace: true);
@@ -1180,13 +1281,11 @@ class LocalStore extends ChangeNotifier {
           final values = raw == null
               ? null
               : (jsonDecode(raw) as Map)['values'] as Map;
-          final records =
-              jsonDecode(
-                    (values?['profiles'] as String?) ??
-                        preferences.getString('profiles') ??
-                        '[]',
-                  )
-                  as List;
+          final records = jsonDecode(
+            (values?['profiles'] as String?) ??
+                preferences.getString('profiles') ??
+                '[]',
+          ) as List;
           for (final row in records) {
             if (row is Map && row['admin'] == true) {
               originalAdmin = LocalProfile.fromJson(
@@ -1195,9 +1294,8 @@ class LocalStore extends ChangeNotifier {
             }
           }
         } catch (_) {}
-        final backupAdmin = _readProfiles(
-          data['profiles'],
-        ).firstWhere((profile) => profile.admin);
+        final backupAdmin = _readProfiles(data['profiles'])
+            .firstWhere((profile) => profile.admin);
         final verifier = originalAdmin?.protected == true
             ? originalAdmin!
             : backupAdmin;

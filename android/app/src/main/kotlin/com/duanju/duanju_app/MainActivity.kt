@@ -4,6 +4,7 @@ import io.flutter.embedding.android.FlutterActivity
 import android.app.UiModeManager
 import android.app.ActivityManager
 import android.app.PictureInPictureParams
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.BatteryManager
@@ -22,6 +23,7 @@ import android.util.Rational
 import android.view.InputDevice
 import android.view.WindowManager
 import android.provider.Settings
+import kotlin.math.roundToInt
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -189,9 +191,26 @@ class MainActivity : FlutterActivity() {
                         "setBrightness" -> {
                             val value = call.argument<Double>("brightness")?.toFloat()
                             if (value != null) {
+                                val target = value.coerceIn(0.01f, 1.0f)
                                 val lp = window.attributes
-                                lp.screenBrightness = value.coerceIn(0.01f, 1.0f)
+                                lp.screenBrightness = target
                                 window.attributes = lp
+                                // 具备 WRITE_SETTINGS 时同步写系统亮度，播放器退出后
+                                // 系统仍维持当前值；未授权时静默跳过，仅影响窗口内亮度
+                                if (Settings.System.canWrite(this)) {
+                                    runCatching {
+                                        Settings.System.putInt(
+                                            contentResolver,
+                                            Settings.System.SCREEN_BRIGHTNESS_MODE,
+                                            Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+                                        )
+                                        Settings.System.putInt(
+                                            contentResolver,
+                                            Settings.System.SCREEN_BRIGHTNESS,
+                                            (target * 255f).roundToInt().coerceIn(1, 255)
+                                        )
+                                    }
+                                }
                                 result.success(true)
                             } else {
                                 result.error("invalid_arg", "缺少亮度数值", null)
@@ -202,6 +221,50 @@ class MainActivity : FlutterActivity() {
                             lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
                             window.attributes = lp
                             result.success(true)
+                        }
+                        "getSystemVolume" -> {
+                            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                            if (am == null) {
+                                result.error("no_audio", "音频服务不可用", null)
+                            } else {
+                                val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC).coerceIn(0, max)
+                                result.success(mapOf("volume" to cur, "max" to max))
+                            }
+                        }
+                        "setSystemVolume" -> {
+                            val value = call.argument<Double>("volume")?.toFloat()
+                            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                            if (value == null || am == null) {
+                                result.error("invalid_arg", "缺少音量数值", null)
+                            } else {
+                                val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                val level = (value * max).roundToInt().coerceIn(0, max)
+                                // 勿扰/禅定等策略下 setStreamVolume 可能抛
+                                // SecurityException，捕获后返回 false 让 Dart
+                                // 侧回退到播放器内部音量
+                                val ok = runCatching {
+                                    am.setStreamVolume(AudioManager.STREAM_MUSIC, level, 0)
+                                }.isSuccess
+                                result.success(ok)
+                            }
+                        }
+                        "setKeepScreenOn" -> {
+                            val enabled = call.argument<Boolean>("enabled")
+                            if (enabled == null) {
+                                result.error("invalid_arg", "缺少常亮状态", null)
+                            } else {
+                                // FLAG_KEEP_SCREEN_ON：窗口可见期间屏幕保持常亮，
+                                // 屏蔽系统超时息屏与省电模式降亮度
+                                runOnUiThread {
+                                    if (enabled) {
+                                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                                    } else {
+                                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                                    }
+                                }
+                                result.success(true)
+                            }
                         }
                         "openExternalPlayer" -> {
                             val url = call.argument<String>("url")
