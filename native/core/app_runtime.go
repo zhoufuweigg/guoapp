@@ -48,6 +48,7 @@ type Downloader struct {
 	rankings              rankingCache
 	cfg                   Config
 	client                *http.Client
+	playbackClient        *http.Client // 禁用 HTTP/2 的备用通道（见 provider_hongguo_playback.go）
 	huangdouDetails       map[string]huangdouDetailEntry
 	huangdouDetailPending map[string]*huangdouDetailCall
 	providerMu            sync.Mutex
@@ -267,6 +268,13 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	transport.MaxIdleConnsPerHost = 8
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
+	// 备用取流通道（djapi 等第三方代理）单独走一个禁用 HTTP/2 的客户端：
+	// 部分代理服务端不协商 ALPN，标准客户端强制 h2 会报
+	// “tls: no application protocol”，回退到纯 HTTP/1.1 即可正常握手。
+	playbackTransport := transport.Clone()
+	playbackTransport.ForceAttemptHTTP2 = false
+	playbackTransport.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+	d.playbackClient = &http.Client{Transport: playbackTransport, Timeout: 45 * time.Second}
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
 	d.client = &http.Client{Transport: newHuangguoBrowserTransport(cdn, d), Timeout: 45 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {

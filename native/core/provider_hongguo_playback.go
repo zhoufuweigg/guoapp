@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/bits"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
@@ -41,8 +44,60 @@ type hongguoPlaybackResponse struct {
 	} `json:"key_urls"`
 }
 
-func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
-	if !hongguoNumericID.MatchString(seriesID) || !hongguoNumericID.MatchString(videoID) {
+// fetchHongguoPlaybackText 走禁用 HTTP/2 的 playbackClient（见 newNativeEngine），
+// 规避部分第三方代理不支持 ALPN 时标准客户端报 “tls: no application protocol” 的问题。
+func (d *Downloader) fetchHongguoPlaybackText(ctx context.Context, rawURL string) (string, error) {
+	retries := d.cfg.Retries
+	if retries <= 0 {
+		retries = 3
+	}
+	var lastErr error
+	for attempt := 1; attempt <= retries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if attempt > 1 {
+			select {
+			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return "", err
+		}
+		request.Header.Set("User-Agent", userAgent)
+		request.Header.Set("Referer", hongguoBaseURL+"/")
+		request.Header.Set("Accept", "application/json; charset=utf-8")
+		response, err := d.playbackClient.Do(request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
+		response.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if len(body) > providerMaxBodyBytes {
+			lastErr = fmt.Errorf("响应超过 %d 字节", providerMaxBodyBytes)
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 || catalogResponseBlockReason(response, body) != "" {
+			lastErr = d.catalogResponseError(request, response, body)
+			if catalogResponseBlockReason(response, body) != "" || (response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != 408) {
+				break
+			}
+			continue
+		}
+		return string(body), nil
+	}
+	return "", lastErr
+}
+
+func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, videoID string) (providerMedia, error) {	if !hongguoNumericID.MatchString(seriesID) || !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果播放请求缺少有效的剧集 ID")
 	}
 	reference, err := json.Marshal(hongguoPlaybackReference{ContentType: 1004, SeriesID: seriesID, VideoID: videoID, VideoPlatform: 3})
@@ -50,7 +105,7 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 		return providerMedia{}, err
 	}
 	query := url.Values{"id": {base64.StdEncoding.EncodeToString(reference)}}
-	body, err := d.fetchProviderText(ctx, hongguoPlaybackAPI+"?"+query.Encode(), hongguoBaseURL+"/")
+	body, err := d.fetchHongguoPlaybackText(ctx, hongguoPlaybackAPI+"?"+query.Encode())
 	if err != nil {
 		return providerMedia{}, err
 	}
